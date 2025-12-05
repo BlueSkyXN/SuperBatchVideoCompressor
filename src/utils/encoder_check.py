@@ -59,12 +59,12 @@ def check_nvenc_available() -> Tuple[bool, str]:
     if not available:
         return False, error
     
-    # 尝试初始化 NVENC
+    # 尝试初始化 NVENC（使用较大分辨率，NVENC 有最小分辨率限制）
     try:
         result = subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
                 "-c:v", "hevc_nvenc",
                 "-f", "null", "-"
             ],
@@ -110,7 +110,7 @@ def check_qsv_available() -> Tuple[bool, str]:
         result = subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
                 "-c:v", "hevc_qsv",
                 "-f", "null", "-"
             ],
@@ -154,7 +154,7 @@ def check_videotoolbox_available() -> Tuple[bool, str]:
         result = subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1",
+                "-f", "lavfi", "-i", "nullsrc=s=256x256:d=0.1",
                 "-c:v", "hevc_videotoolbox",
                 "-f", "null", "-"
             ],

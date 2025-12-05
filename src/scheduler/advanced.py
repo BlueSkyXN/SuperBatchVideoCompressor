@@ -19,6 +19,8 @@ from enum import Enum
 from typing import Dict, List, Optional, Callable, Any, Set
 from queue import Queue, Empty
 
+from src.utils.process import is_shutdown_requested
+
 
 class EncoderType(Enum):
     """编码器类型（按优先级排序）"""
@@ -231,6 +233,16 @@ class AdvancedScheduler:
             retry_history = []
             
             while task_state.retry_count < task_state.max_retries:
+                # 检查是否收到关闭信号
+                if self._shutdown or is_shutdown_requested():
+                    return TaskResult(
+                        success=False,
+                        filepath=filepath,
+                        error="收到关闭信号",
+                        retry_history=retry_history,
+                        skipped=True
+                    )
+                
                 # 获取下一个组合
                 combination = self._get_next_combination(task_state)
                 
@@ -266,6 +278,17 @@ class AdvancedScheduler:
                 self.logger.info(f"[任务 {task_id}] 尝试 {combo_str}")
                 
                 try:
+                    # 再次检查关闭信号
+                    if self._shutdown or is_shutdown_requested():
+                        slot.release(success=False)
+                        return TaskResult(
+                            success=False,
+                            filepath=filepath,
+                            error="收到关闭信号",
+                            retry_history=retry_history,
+                            skipped=True
+                        )
+                    
                     result = encode_func(filepath, encoder_type, decode_mode)
                     
                     if result.success:
@@ -276,6 +299,17 @@ class AdvancedScheduler:
                         return result
                     else:
                         slot.release(success=False)
+                        
+                        # 如果是因为收到信号导致的失败，不继续重试
+                        if is_shutdown_requested():
+                            return TaskResult(
+                                success=False,
+                                filepath=filepath,
+                                error="收到关闭信号",
+                                retry_history=retry_history,
+                                skipped=True
+                            )
+                        
                         error_msg = result.error or "未知错误"
                         task_state.errors.append(f"{combo_str}: {error_msg}")
                         self.logger.warning(f"[任务 {task_id}] {combo_str} 失败: {error_msg}")
@@ -283,6 +317,17 @@ class AdvancedScheduler:
                         
                 except Exception as e:
                     slot.release(success=False)
+                    
+                    # 如果是键盘中断，直接返回
+                    if isinstance(e, KeyboardInterrupt) or is_shutdown_requested():
+                        return TaskResult(
+                            success=False,
+                            filepath=filepath,
+                            error="收到关闭信号",
+                            retry_history=retry_history,
+                            skipped=True
+                        )
+                    
                     task_state.errors.append(f"{combo_str}: {str(e)}")
                     self.logger.error(f"[任务 {task_id}] 异常: {e}")
                     task_state.retry_count += 1
