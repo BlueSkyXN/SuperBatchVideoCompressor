@@ -8,10 +8,18 @@ SBVC (Super Batch Video Compressor) - CLI 入口
 
 import os
 import sys
+import io
 import logging
 import argparse
 import concurrent.futures
 from typing import Dict, Any
+
+# 强制使用UTF-8编码，解决Windows环境下中文输出问题
+if sys.platform == 'win32':
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    if sys.stderr.encoding != 'utf-8':
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # 确保可以导入 src 模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

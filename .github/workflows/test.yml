@@ -20,6 +20,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.11'
+  PYTHONIOENCODING: 'utf-8'
 
 jobs:
   # 代码质量检查
@@ -96,10 +97,22 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Set Windows Console to UTF-8
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # 设置控制台代码页为UTF-8
+          chcp 65001
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
       - name: Run tests on all Python versions (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # 确保UTF-8编码
+          chcp 65001 > $null
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
           $versions = @("${{ matrix.versions }}" -split "`n")
           foreach ($version in $versions) {
             $version = $version.Trim()
