@@ -3,59 +3,33 @@
 """
 高级多编码器调度系统
 
-设计思路：
-1. 硬件编码器（NVENC/QSV）同时并发处理不同文件
-2. 失败任务进入"降级队列"，按以下顺序重试：
-   - 同编码器软解+硬编
-   - 其他硬件编码器
-   - CPU 软编码（兜底）
-3. 每个编码器有独立的并发槽位和等候队列
-
-调度流程：
-┌─────────────────────────────────────────────────────────────┐
-│                        任务入口                              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  第一层：硬解+硬编（优先分配到有空闲槽位的编码器）            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │ NVENC (3槽) │  │ QSV (2槽)   │  │ VT (macOS)  │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-└─────────────────────────────────────────────────────────────┘
-          ↓ 失败                ↓ 失败
-┌─────────────────────────────────────────────────────────────┐
-│  第二层：软解+硬编（在当前编码器重试）                        │
-│  - 限帧率版本                                                │
-│  - 不限帧率版本                                              │
-└─────────────────────────────────────────────────────────────┘
-          ↓ 仍然失败
-┌─────────────────────────────────────────────────────────────┐
-│  第三层：移交其他硬件编码器（进入其等候队列）                  │
-│  NVENC失败 → 移交QSV                                        │
-│  QSV失败 → 移交NVENC（如果配置了双向回退）                   │
-└─────────────────────────────────────────────────────────────┘
-          ↓ 所有硬件编码器失败
-┌─────────────────────────────────────────────────────────────┐
-│  第四层：CPU 软编码兜底                                      │
-└─────────────────────────────────────────────────────────────┘
+设计：
+1. 从配置中读取各编码器的 enabled 状态
+2. 启用的硬件编码器并发处理不同文件
+3. 失败任务智能回退：同编码器降级 → 其他编码器 → CPU兜底(可选)
+4. 所有方法失败的任务跳过，继续处理队列中下一个
+5. 预扫描任务列表，构建调度队列
 """
 
 import threading
 import logging
-import queue
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Callable, Any, Set
-from concurrent.futures import ThreadPoolExecutor, Future
+from queue import Queue, Empty
 
 
 class EncoderType(Enum):
-    """编码器类型"""
+    """编码器类型（按优先级排序）"""
     NVENC = "nvenc"
-    QSV = "qsv"
     VIDEOTOOLBOX = "videotoolbox"
+    QSV = "qsv"
     CPU = "cpu"
+
+
+# 编码器优先级顺序
+ENCODER_PRIORITY = [EncoderType.NVENC, EncoderType.VIDEOTOOLBOX, EncoderType.QSV]
 
 
 class DecodeMode(Enum):
@@ -72,11 +46,10 @@ class TaskState:
     task_id: int
     current_encoder: Optional[EncoderType] = None
     current_decode_mode: DecodeMode = DecodeMode.HW_DECODE
-    tried_encoders: Set[EncoderType] = field(default_factory=set)
-    tried_modes: Dict[EncoderType, Set[DecodeMode]] = field(default_factory=dict)
+    tried_combinations: Set[str] = field(default_factory=set)  # "encoder:decode_mode"
     errors: List[str] = field(default_factory=list)
     retry_count: int = 0
-    max_retries: int = 10  # 防止无限循环
+    max_retries: int = 20  # 防止无限循环
 
 
 @dataclass
@@ -89,6 +62,7 @@ class TaskResult:
     error: Optional[str] = None
     stats: Dict[str, Any] = field(default_factory=dict)
     retry_history: List[str] = field(default_factory=list)
+    skipped: bool = False  # 是否因所有方法失败而跳过
 
 
 class EncoderSlot:
@@ -102,40 +76,32 @@ class EncoderSlot:
         self.total_completed = 0
         self.total_failed = 0
         self._lock = threading.Lock()
-        self.logger = logging.getLogger(f"Slot.{encoder_type.value}")
     
     def acquire(self, blocking: bool = True, timeout: Optional[float] = None) -> bool:
-        """获取槽位"""
         acquired = self.semaphore.acquire(blocking=blocking, timeout=timeout)
         if acquired:
             with self._lock:
                 self.current_tasks += 1
-                self.logger.debug(f"槽位获取 ({self.current_tasks}/{self.max_concurrent})")
         return acquired
     
     def release(self, success: bool = True):
-        """释放槽位"""
         with self._lock:
             self.current_tasks -= 1
             if success:
                 self.total_completed += 1
             else:
                 self.total_failed += 1
-            self.logger.debug(f"槽位释放 ({self.current_tasks}/{self.max_concurrent})")
         self.semaphore.release()
     
     def can_accept(self) -> bool:
-        """检查是否有空闲槽位"""
         with self._lock:
             return self.current_tasks < self.max_concurrent
     
     def get_load(self) -> float:
-        """获取负载率"""
         with self._lock:
             return self.current_tasks / self.max_concurrent if self.max_concurrent > 0 else 1.0
     
     def get_stats(self) -> Dict[str, Any]:
-        """获取统计"""
         with self._lock:
             return {
                 "encoder": self.encoder_type.value,
@@ -151,122 +117,84 @@ class AdvancedScheduler:
     高级多编码器调度器
     
     特性：
-    1. 多编码器并发：NVENC 和 QSV 同时处理不同文件
-    2. 智能回退：失败任务进入降级队列
-    3. 负载均衡：优先分配到负载低的编码器
+    1. 从配置的 enabled 字段读取启用状态
+    2. 多编码器并发处理
+    3. 智能回退：同编码器降级 → 其他编码器 → CPU兜底
+    4. 失败任务跳过，继续队列
     """
     
     def __init__(
         self,
         encoder_configs: Dict[str, Dict[str, Any]],
         max_total_concurrent: int = 5,
-        cpu_fallback: bool = True,
-        priority_order: Optional[List[str]] = None
     ):
-        """
-        初始化调度器
-        
-        Args:
-            encoder_configs: 编码器配置 {
-                "nvenc": {"enabled": True, "max_concurrent": 3},
-                "qsv": {"enabled": True, "max_concurrent": 2},
-            }
-            max_total_concurrent: 总并发上限
-            cpu_fallback: 是否启用 CPU 兜底
-            priority_order: 编码器优先级 ["nvenc", "qsv", "cpu"]
-        """
         self.max_total_concurrent = max_total_concurrent
         self.total_semaphore = threading.Semaphore(max_total_concurrent)
-        self.cpu_fallback = cpu_fallback
-        self.priority_order = priority_order or ["nvenc", "videotoolbox", "qsv"]
         
         self._lock = threading.Lock()
         self._shutdown = False
         self._task_counter = 0
         
-        self.logger = logging.getLogger("AdvancedScheduler")
+        self.logger = logging.getLogger("Scheduler")
         
-        # 初始化编码器槽位
+        # 初始化编码器槽位（根据 enabled 状态）
         self.encoder_slots: Dict[EncoderType, EncoderSlot] = {}
-        self.enabled_encoders: List[EncoderType] = []
+        self.enabled_hw_encoders: List[EncoderType] = []  # 启用的硬件编码器
+        self.cpu_fallback_enabled = False
         
-        for name in self.priority_order:
+        # 按优先级顺序检查硬件编码器
+        for encoder_type in ENCODER_PRIORITY:
+            name = encoder_type.value
             if name in encoder_configs:
                 config = encoder_configs[name]
                 if config.get("enabled", False):
-                    encoder_type = EncoderType(name)
                     max_concurrent = config.get("max_concurrent", 2)
                     self.encoder_slots[encoder_type] = EncoderSlot(encoder_type, max_concurrent)
-                    self.enabled_encoders.append(encoder_type)
+                    self.enabled_hw_encoders.append(encoder_type)
         
         # CPU 兜底
-        if cpu_fallback:
-            cpu_config = encoder_configs.get("cpu", {})
+        cpu_config = encoder_configs.get("cpu", {})
+        if cpu_config.get("enabled", False):
+            self.cpu_fallback_enabled = True
             max_concurrent = cpu_config.get("max_concurrent", 4)
             self.encoder_slots[EncoderType.CPU] = EncoderSlot(EncoderType.CPU, max_concurrent)
         
+        if not self.enabled_hw_encoders and not self.cpu_fallback_enabled:
+            raise ValueError("至少需要启用一个编码器！请检查配置文件。")
+        
         self.logger.info(
-            f"调度器初始化: 编码器={[e.value for e in self.enabled_encoders]}, "
-            f"CPU兜底={cpu_fallback}, 总并发={max_total_concurrent}"
+            f"调度器初始化: 硬件编码器={[e.value for e in self.enabled_hw_encoders]}, "
+            f"CPU兜底={'启用' if self.cpu_fallback_enabled else '禁用'}, "
+            f"总并发={max_total_concurrent}"
         )
     
-    def _select_encoder(self, task_state: TaskState) -> Optional[EncoderType]:
+    def _get_next_combination(self, task_state: TaskState) -> Optional[tuple]:
         """
-        选择编码器
+        获取下一个编码器+解码模式组合
         
-        策略：
-        1. 首次任务：选择负载最低的可用编码器
-        2. 重试任务：选择未尝试过的编码器
+        回退顺序:
+        1. 当前编码器的下一个解码模式（硬解 → 软解限帧 → 软解）
+        2. 下一个硬件编码器（从硬解开始）
+        3. CPU 兜底（如果启用）
+        
+        Returns: (EncoderType, DecodeMode) 或 None
         """
-        with self._lock:
-            # 过滤已尝试过所有模式的编码器
-            available = []
-            for encoder_type in self.enabled_encoders:
-                if encoder_type in task_state.tried_encoders:
-                    # 检查是否所有模式都试过了
-                    tried_modes = task_state.tried_modes.get(encoder_type, set())
-                    if len(tried_modes) >= 3:  # HW_DECODE, SW_DECODE_LIMITED, SW_DECODE
-                        continue
-                
-                slot = self.encoder_slots.get(encoder_type)
-                if slot and slot.can_accept():
-                    available.append((encoder_type, slot.get_load()))
-            
-            if not available:
-                # 尝试 CPU 兜底
-                if self.cpu_fallback and EncoderType.CPU not in task_state.tried_encoders:
-                    cpu_slot = self.encoder_slots.get(EncoderType.CPU)
-                    if cpu_slot and cpu_slot.can_accept():
-                        return EncoderType.CPU
-                return None
-            
-            # 选择负载最低的
-            available.sort(key=lambda x: x[1])
-            return available[0][0]
-    
-    def _get_next_decode_mode(
-        self, 
-        encoder_type: EncoderType, 
-        task_state: TaskState
-    ) -> Optional[DecodeMode]:
-        """获取下一个解码模式"""
-        tried = task_state.tried_modes.get(encoder_type, set())
+        decode_modes_hw = [DecodeMode.HW_DECODE, DecodeMode.SW_DECODE_LIMITED, DecodeMode.SW_DECODE]
+        decode_modes_cpu = [DecodeMode.SW_DECODE_LIMITED, DecodeMode.SW_DECODE]
         
-        # CPU 编码只有软解模式
-        if encoder_type == EncoderType.CPU:
-            if DecodeMode.SW_DECODE_LIMITED not in tried:
-                return DecodeMode.SW_DECODE_LIMITED
-            if DecodeMode.SW_DECODE not in tried:
-                return DecodeMode.SW_DECODE
-            return None
+        # 尝试所有硬件编码器的所有解码模式
+        for encoder_type in self.enabled_hw_encoders:
+            for decode_mode in decode_modes_hw:
+                combo = f"{encoder_type.value}:{decode_mode.value}"
+                if combo not in task_state.tried_combinations:
+                    return (encoder_type, decode_mode)
         
-        # 硬件编码器：硬解 → 软解限帧 → 软解
-        if DecodeMode.HW_DECODE not in tried:
-            return DecodeMode.HW_DECODE
-        if DecodeMode.SW_DECODE_LIMITED not in tried:
-            return DecodeMode.SW_DECODE_LIMITED
-        if DecodeMode.SW_DECODE not in tried:
-            return DecodeMode.SW_DECODE
+        # 尝试 CPU 兜底
+        if self.cpu_fallback_enabled:
+            for decode_mode in decode_modes_cpu:
+                combo = f"cpu:{decode_mode.value}"
+                if combo not in task_state.tried_combinations:
+                    return (EncoderType.CPU, decode_mode)
         
         return None
     
@@ -281,19 +209,18 @@ class AdvancedScheduler:
         
         Args:
             filepath: 文件路径
-            encode_func: 编码函数，签名为 (filepath, encoder_type, decode_mode) -> TaskResult
-            timeout: 超时时间
+            encode_func: 编码函数 (filepath, encoder_type, decode_mode) -> TaskResult
             
         Returns:
-            TaskResult
+            TaskResult（包含是否被跳过）
         """
         if self._shutdown:
-            return TaskResult(success=False, filepath=filepath, error="调度器已关闭")
+            return TaskResult(success=False, filepath=filepath, error="调度器已关闭", skipped=True)
         
         # 获取总并发槽位
         acquired = self.total_semaphore.acquire(blocking=True, timeout=timeout)
         if not acquired:
-            return TaskResult(success=False, filepath=filepath, error="获取并发槽位超时")
+            return TaskResult(success=False, filepath=filepath, error="获取并发槽位超时", skipped=True)
         
         try:
             with self._lock:
@@ -304,49 +231,41 @@ class AdvancedScheduler:
             retry_history = []
             
             while task_state.retry_count < task_state.max_retries:
-                # 选择编码器
-                encoder_type = self._select_encoder(task_state)
+                # 获取下一个组合
+                combination = self._get_next_combination(task_state)
                 
-                if encoder_type is None:
-                    # 没有可用编码器，等待一会儿再试
-                    if task_state.retry_count < 3:
-                        time.sleep(0.5)
-                        task_state.retry_count += 1
-                        continue
-                    break
+                if combination is None:
+                    # 所有方法都尝试过了，跳过此任务
+                    error_summary = "; ".join(task_state.errors[-3:]) if task_state.errors else "未知错误"
+                    self.logger.warning(f"[跳过] 任务 {task_id}: 所有编码方法均失败 - {filepath}")
+                    return TaskResult(
+                        success=False,
+                        filepath=filepath,
+                        error=f"所有编码方法均失败: {error_summary}",
+                        retry_history=retry_history,
+                        skipped=True
+                    )
                 
-                # 选择解码模式
-                decode_mode = self._get_next_decode_mode(encoder_type, task_state)
-                
-                if decode_mode is None:
-                    # 该编码器所有模式都试过了，标记并继续
-                    task_state.tried_encoders.add(encoder_type)
-                    task_state.retry_count += 1
-                    continue
+                encoder_type, decode_mode = combination
+                combo_str = f"{encoder_type.value}:{decode_mode.value}"
+                task_state.tried_combinations.add(combo_str)
                 
                 # 获取编码器槽位
                 slot = self.encoder_slots.get(encoder_type)
-                if not slot or not slot.acquire(blocking=True, timeout=5):
+                if not slot:
                     task_state.retry_count += 1
                     continue
                 
-                # 记录尝试
-                task_state.current_encoder = encoder_type
-                task_state.current_decode_mode = decode_mode
+                # 等待槽位（带超时）
+                if not slot.acquire(blocking=True, timeout=10):
+                    task_state.errors.append(f"{combo_str}: 获取槽位超时")
+                    task_state.retry_count += 1
+                    continue
                 
-                if encoder_type not in task_state.tried_modes:
-                    task_state.tried_modes[encoder_type] = set()
-                task_state.tried_modes[encoder_type].add(decode_mode)
-                
-                retry_info = f"{encoder_type.value}:{decode_mode.value}"
-                retry_history.append(retry_info)
-                
-                self.logger.info(
-                    f"[任务 {task_id}] 尝试 {retry_info} - {filepath}"
-                )
+                retry_history.append(combo_str)
+                self.logger.info(f"[任务 {task_id}] 尝试 {combo_str}")
                 
                 try:
-                    # 执行编码
                     result = encode_func(filepath, encoder_type, decode_mode)
                     
                     if result.success:
@@ -357,25 +276,24 @@ class AdvancedScheduler:
                         return result
                     else:
                         slot.release(success=False)
-                        task_state.errors.append(f"{retry_info}: {result.error}")
-                        self.logger.warning(
-                            f"[任务 {task_id}] {retry_info} 失败: {result.error}"
-                        )
+                        error_msg = result.error or "未知错误"
+                        task_state.errors.append(f"{combo_str}: {error_msg}")
+                        self.logger.warning(f"[任务 {task_id}] {combo_str} 失败: {error_msg}")
                         task_state.retry_count += 1
                         
                 except Exception as e:
                     slot.release(success=False)
-                    task_state.errors.append(f"{retry_info}: {str(e)}")
+                    task_state.errors.append(f"{combo_str}: {str(e)}")
                     self.logger.error(f"[任务 {task_id}] 异常: {e}")
                     task_state.retry_count += 1
             
-            # 所有尝试都失败
-            error_msg = "; ".join(task_state.errors[-3:])  # 只保留最后3个错误
+            # 超过最大重试次数
             return TaskResult(
                 success=False,
                 filepath=filepath,
-                error=f"所有编码方式均失败: {error_msg}",
-                retry_history=retry_history
+                error="超过最大重试次数",
+                retry_history=retry_history,
+                skipped=True
             )
             
         finally:
@@ -389,8 +307,8 @@ class AdvancedScheduler:
         """获取统计信息"""
         return {
             "max_total_concurrent": self.max_total_concurrent,
-            "enabled_encoders": [e.value for e in self.enabled_encoders],
-            "cpu_fallback": self.cpu_fallback,
+            "enabled_hw_encoders": [e.value for e in self.enabled_hw_encoders],
+            "cpu_fallback": self.cpu_fallback_enabled,
             "encoder_slots": {
                 encoder_type.value: slot.get_stats()
                 for encoder_type, slot in self.encoder_slots.items()
@@ -403,24 +321,16 @@ def create_advanced_scheduler(config: Dict[str, Any]) -> AdvancedScheduler:
     encoders_config = config.get("encoders", {})
     scheduler_config = config.get("scheduler", {})
     
-    # 构建编码器配置
+    # 直接读取各编码器的配置（enabled 在各自配置中）
     encoder_configs = {}
-    enabled_list = encoders_config.get("enabled", [])
-    
     for name in ["nvenc", "qsv", "videotoolbox", "cpu"]:
         cfg = encoders_config.get(name, {})
         encoder_configs[name] = {
-            "enabled": name in enabled_list or cfg.get("enabled", False),
+            "enabled": cfg.get("enabled", False),
             "max_concurrent": cfg.get("max_concurrent", 2),
         }
-    
-    # CPU 特殊处理
-    if encoders_config.get("cpu_fallback", True):
-        encoder_configs["cpu"]["enabled"] = True
     
     return AdvancedScheduler(
         encoder_configs=encoder_configs,
         max_total_concurrent=scheduler_config.get("max_total_concurrent", 5),
-        cpu_fallback=encoders_config.get("cpu_fallback", True),
-        priority_order=enabled_list if enabled_list else None
     )

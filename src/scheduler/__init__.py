@@ -1,28 +1,24 @@
 # 调度模块
-"""多编码器混合调度"""
+"""多编码器调度系统"""
 
-from src.scheduler.pool import EncoderPool, EncoderConfig, EncoderType, TaskResult
-from src.scheduler.hybrid import HybridScheduler, BatchScheduler, create_scheduler_from_config
 from src.scheduler.advanced import (
     AdvancedScheduler,
+    EncoderType,
     DecodeMode,
     TaskState,
+    TaskResult,
     EncoderSlot,
-    create_advanced_scheduler
+    create_advanced_scheduler,
+    ENCODER_PRIORITY,
 )
 
 __all__ = [
-    "EncoderPool",
-    "EncoderConfig",
-    "EncoderType",
-    "TaskResult",
-    "HybridScheduler",
-    "BatchScheduler",
-    "create_scheduler_from_config",
-    # 高级调度器
     "AdvancedScheduler",
+    "EncoderType",
     "DecodeMode",
     "TaskState",
+    "TaskResult",
     "EncoderSlot",
     "create_advanced_scheduler",
+    "ENCODER_PRIORITY",
 ]

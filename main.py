@@ -16,6 +16,10 @@ if sys.platform == 'win32':
     if sys.stderr.encoding != 'utf-8':
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
+# 启动前清理 Python 缓存，避免旧的 .pyc 文件导致类定义不一致
+from src.utils.process import cleanup_pycache
+cleanup_pycache()
+
 from cli import main
 
 if __name__ == "__main__":

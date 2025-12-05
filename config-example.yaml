@@ -6,166 +6,123 @@
 # 路径配置
 # ============================================================
 paths:
-  # Linux/macOS 路径示例：
   input: "/path/to/input"   # 输入目录
   output: "/path/to/output" # 输出目录
-  log: "/path/to/logs"      # 日志目录（程序会创建）
+  log: "/path/to/logs"      # 日志目录
 
-  # Windows 路径示例（取消注释并修改）：
-  # input: "F:/lada/output"    # 推荐使用正斜杠
-  # output: "F:/lada/pre"      # 或使用双反斜杠 "F:\\lada\\pre"
-  # log: "I:/BVC"
+  # Windows 路径示例：
+  # input: "D:/Videos/input"
+  # output: "D:/Videos/output"
+  # log: "D:/Videos/logs"
 
 # ============================================================
 # 编码配置
 # ============================================================
 encoding:
-  # 输出编码格式: hevc, avc, av1
-  codec: hevc
-  
-  # 音频码率（保持 128k 兼容性较好）
+  codec: hevc              # 输出编码: hevc, avc, av1
   audio_bitrate: "128k"
   
-  # 码率计算
   bitrate:
-    # 强制码率 (0 = 自动计算；>0 时直接用此值)
-    forced: 0
-    # 压缩比例（自动模式下：目标码率 = 原始码率 * ratio）
-    ratio: 0.5
-    # 最小码率 (bps) —— 防止过度压缩
-    min: 500000
-    # 根据分辨率的最大码率封顶（bps）
-    max_by_resolution:
-      720: 1500000    # 720p: 1.5 Mbps
-      1080: 3000000   # 1080p: 3 Mbps
-      1440: 5000000   # 1440p (2K): 5 Mbps
-      2160: 9000000   # 4K: 9 Mbps
+    forced: 0              # 强制码率(bps)，0=自动计算
+    ratio: 0.5             # 压缩比例
+    min: 500000            # 最小码率(bps)
+    max_by_resolution:     # 分辨率码率上限
+      720: 1500000
+      1080: 3000000
+      1440: 5000000
+      2160: 9000000
 
 # ============================================================
 # 帧率限制
 # ============================================================
 fps:
-  max: 30                            # 软件限帧的上限
-  limit_on_software_decode: true     # 软件解码时限帧（减轻 CPU 负担）
-  limit_on_software_encode: true     # 软件编码时限帧
+  max: 30
+  limit_on_software_decode: true   # 软解时限帧
+  limit_on_software_encode: true   # 软编时限帧
 
 # ============================================================
-# 编码器配置 (高级调度核心)
+# 编码器配置
 # ============================================================
-# 💡 调度策略说明：
-#   1. NVENC 和 QSV 同时并发处理不同文件
-#   2. 失败任务智能回退：
-#      - 同编码器内：硬解+硬编 → 软解+硬编(限帧) → 软解+硬编
-#      - 跨编码器：NVENC失败 → QSV，QSV失败 → NVENC
-#      - 最终兜底：CPU 软编码
+# 💡 工作原理：
+#   - 各编码器的 enabled 字段表示"想使用"
+#   - 启动时自动检测硬件，不可用的会被自动禁用
+#   - 启用的硬件编码器并发处理，按优先级分配任务
+#   - 失败任务自动回退：同编码器降级 → 其他编码器 → CPU兜底
 #
-# 💡 硬件编码器说明：
-#   - nvenc: NVIDIA GPU 硬件编码（需要 N 卡）
-#   - qsv: Intel Quick Sync Video（需要 Intel CPU 集成显卡）
-#   - videotoolbox: Apple 硬件编码（仅 macOS，Windows 不可用）
-#   - cpu: 软件编码（兼容性最好，速度最慢）
+# 💡 编码器说明：
+#   - nvenc: NVIDIA GPU (需要 N 卡 + 驱动)
+#   - qsv: Intel Quick Sync (需要 Intel 集显 + 驱动)
+#   - videotoolbox: Apple 硬件编码 (仅 macOS)
+#   - cpu: 软件编码兜底 (最慢但兼容性最好)
+#
+# 💡 优先级顺序: nvenc > videotoolbox > qsv > cpu
 
 encoders:
-  # 启用的编码器列表 (按优先级排序)
-  # 📝 不同平台推荐配置：
-  #   Windows (N卡+Intel): ["nvenc", "qsv"]  ← 推荐
-  #   Windows (仅N卡):     ["nvenc"]
-  #   Windows (仅Intel):   ["qsv"]
-  #   macOS:               ["videotoolbox"]
-  #   Linux (N卡):         ["nvenc"]
-  enabled:
-    - nvenc
-    - qsv
-
-  # CPU 编码器作为兜底（强烈推荐开启）
-  cpu_fallback: true
-
-  # NVIDIA NVENC 配置
+  # NVIDIA NVENC
   nvenc:
-    enabled: true
-    max_concurrent: 3    # 单卡并发上限（3-6根据显存调整）
-    device: -1           # GPU设备ID，-1表示自动选择
+    enabled: true          # 想用就设 true，启动时自动检测是否可用
+    max_concurrent: 3      # 并发上限
 
-  # Intel QSV 配置
+  # Intel QSV
   qsv:
-    enabled: true
-    max_concurrent: 2    # QSV并发上限（通常2-3）
-    device: null         # null 表示默认设备
+    enabled: true          # 想用就设 true，启动时自动检测是否可用
+    max_concurrent: 2
 
-  # Apple VideoToolbox 配置 (仅 macOS，Windows 用户请忽略)
+  # Apple VideoToolbox (仅 macOS)
   videotoolbox:
-    enabled: false       # macOS 上设为 true
+    enabled: false         # macOS 用户设 true
     max_concurrent: 3
 
-  # CPU 软件编码配置
+  # CPU 软件编码 (兜底)
   cpu:
-    enabled: true
-    max_concurrent: 4    # CPU并发数（根据核心数调整）
-    preset: medium       # 编码预设：ultrafast/fast/medium/slow
+    enabled: true          # 建议保持 true 作为最终兜底
+    max_concurrent: 4
+    preset: medium         # ultrafast/fast/medium/slow
 
 # ============================================================
-# 调度配置（仅在 --multi-gpu 模式下生效）
+# 调度配置
 # ============================================================
 scheduler:
-  # 总并发上限（跨所有编码器）
-  # 💡 建议设置为所有编码器 max_concurrent 之和
-  #    例如: nvenc(3) + qsv(2) = 5
+  # 总并发上限 (建议 = 各编码器 max_concurrent 之和)
   max_total_concurrent: 5
 
 # ============================================================
 # 文件处理
 # ============================================================
 files:
-  min_size_mb: 100           # 小于此大小跳过（避免处理小文件）
-  keep_structure: true       # 保持原目录结构到输出
-  skip_existing: true        # 目标文件存在则跳过
+  min_size_mb: 100         # 小于此大小跳过
+  keep_structure: true     # 保持目录结构
+  skip_existing: true      # 跳过已存在的输出
 
 # ============================================================
-# 📝 常见使用场景配置示例
+# 配置示例
 # ============================================================
 #
-# 【场景1：Windows + N卡 + Intel集显，最大化并发】
+# 【Windows: N卡 + Intel集显】(推荐配置)
 # encoders:
-#   enabled: ["nvenc", "qsv"]
-#   cpu_fallback: true
-#   nvenc:
-#     max_concurrent: 3
-#   qsv:
-#     max_concurrent: 2
-# scheduler:
-#   max_total_concurrent: 5
+#   nvenc: { enabled: true, max_concurrent: 3 }
+#   qsv: { enabled: true, max_concurrent: 2 }
+#   cpu: { enabled: true }
+# scheduler: { max_total_concurrent: 5 }
 #
-# 【场景2：仅使用 N 卡】
+# 【Windows: 仅 N 卡】
 # encoders:
-#   enabled: ["nvenc"]
-#   cpu_fallback: true
-#   nvenc:
-#     max_concurrent: 3
-# scheduler:
-#   max_total_concurrent: 3
+#   nvenc: { enabled: true, max_concurrent: 3 }
+#   qsv: { enabled: false }
+#   cpu: { enabled: true }
+# scheduler: { max_total_concurrent: 3 }
 #
-# 【场景3：仅使用 Intel 集显】
+# 【macOS: Apple 芯片】
 # encoders:
-#   enabled: ["qsv"]
-#   cpu_fallback: true
-#   qsv:
-#     max_concurrent: 2
-# scheduler:
-#   max_total_concurrent: 2
+#   nvenc: { enabled: false }
+#   qsv: { enabled: false }
+#   videotoolbox: { enabled: true, max_concurrent: 3 }
+#   cpu: { enabled: true }
+# scheduler: { max_total_concurrent: 3 }
 #
-# 【场景4：macOS VideoToolbox】
+# 【纯 CPU 模式】(无硬件加速)
 # encoders:
-#   enabled: ["videotoolbox"]
-#   cpu_fallback: true
-#   videotoolbox:
-#     enabled: true
-#     max_concurrent: 3
-#
-# 【场景5：纯 CPU 模式（无硬件加速）】
-# encoders:
-#   enabled: []
-#   cpu_fallback: true
-#   cpu:
-#     max_concurrent: 8
-# scheduler:
-#   max_total_concurrent: 8
+#   nvenc: { enabled: false }
+#   qsv: { enabled: false }
+#   cpu: { enabled: true, max_concurrent: 4 }
+# scheduler: { max_total_concurrent: 4 }

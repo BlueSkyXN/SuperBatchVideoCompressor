@@ -10,7 +10,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core.encoder import build_encoding_commands, calculate_target_bitrate
+from src.core.encoder import (
+    calculate_target_bitrate,
+    build_hw_encode_command,
+    build_sw_encode_command,
+)
 from src.config.defaults import HW_ENCODERS, SW_ENCODERS
 
 
@@ -70,49 +74,62 @@ class TestBuildEncodingCommands:
     
     def test_nvenc_hw_commands(self):
         """测试 NVENC 硬件编码命令"""
-        commands = build_encoding_commands(
+        result = build_hw_encode_command(
             filepath="/test/input.mp4",
             temp_filename="/test/output.mp4",
             bitrate=3000000,
             source_codec="h264",
             hw_accel="nvenc",
             output_codec="hevc",
-            enable_software_encoding=False,
+            use_hw_decode=True,
         )
         
-        assert len(commands) >= 2
-        assert "NVIDIA NVENC" in commands[0]["name"]
+        assert result is not None
+        assert "NVIDIA NVENC" in result["name"]
+        assert "hevc_nvenc" in result["cmd"]
     
     def test_qsv_hw_commands(self):
         """测试 QSV 硬件编码命令"""
-        commands = build_encoding_commands(
+        result = build_hw_encode_command(
             filepath="/test/input.mp4",
             temp_filename="/test/output.mp4",
             bitrate=3000000,
             source_codec="h264",
             hw_accel="qsv",
             output_codec="hevc",
-            enable_software_encoding=False,
+            use_hw_decode=True,
         )
         
-        assert len(commands) >= 2
-        assert "Intel QSV" in commands[0]["name"]
+        assert result is not None
+        assert "Intel QSV" in result["name"]
     
-    def test_software_fallback_commands(self):
-        """测试软件编码回退命令"""
-        commands = build_encoding_commands(
+    def test_software_commands(self):
+        """测试软件编码命令"""
+        result = build_sw_encode_command(
             filepath="/test/input.mp4",
             temp_filename="/test/output.mp4",
             bitrate=3000000,
-            source_codec="h264",
-            hw_accel="none",
             output_codec="hevc",
-            enable_software_encoding=True,
+            limit_fps=False,
         )
         
-        # 应该有 CPU 编码命令
-        cpu_commands = [c for c in commands if "CPU" in c["name"]]
-        assert len(cpu_commands) >= 1
+        assert result is not None
+        assert "CPU" in result["name"]
+        assert "libx265" in result["cmd"]
+    
+    def test_software_with_fps_limit(self):
+        """测试带帧率限制的软件编码"""
+        result = build_sw_encode_command(
+            filepath="/test/input.mp4",
+            temp_filename="/test/output.mp4",
+            bitrate=3000000,
+            output_codec="hevc",
+            limit_fps=True,
+            max_fps=30,
+        )
+        
+        assert "限30fps" in result["name"]
+        assert "fps=30" in " ".join(result["cmd"])
 
 
 class TestEncoderMappings:

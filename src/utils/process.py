@@ -7,9 +7,12 @@
 """
 
 import os
+import sys
+import shutil
 import signal
 import logging
 import threading
+from pathlib import Path
 from typing import Set
 
 # 全局进程集合和锁
@@ -103,9 +106,18 @@ def cleanup_temp_files(output_folder: str) -> int:
         return 0
     
     cleaned_count = 0
+    # 支持多种临时文件模式
+    temp_patterns = ["tmp_*.mp4", "tmp_*.mkv", "tmp_*.avi", "*.tmp", "*.temp"]
+    
     for root, _, files in os.walk(output_folder):
         for file in files:
-            if file.startswith("tmp_") and file.endswith(".mp4"):
+            # 检查是否匹配临时文件模式
+            is_temp = (
+                file.startswith("tmp_") or 
+                file.endswith(".tmp") or 
+                file.endswith(".temp")
+            )
+            if is_temp:
                 filepath = os.path.join(root, file)
                 try:
                     os.remove(filepath)
@@ -113,6 +125,47 @@ def cleanup_temp_files(output_folder: str) -> int:
                     cleaned_count += 1
                 except Exception as e:
                     logging.warning(f"[清理] 删除临时文件失败 {filepath}: {e}")
+    
+    return cleaned_count
+
+
+def cleanup_pycache(project_root: str = None) -> int:
+    """
+    清理 Python 字节码缓存目录
+    
+    解决代码更新后旧缓存导致的类定义不一致问题
+    
+    Args:
+        project_root: 项目根目录，默认为当前脚本所在目录的父目录
+        
+    Returns:
+        清理的目录数量
+    """
+    if project_root is None:
+        # 获取项目根目录 (src/utils/process.py -> project root)
+        project_root = Path(__file__).parent.parent.parent
+    
+    project_root = Path(project_root)
+    cleaned_count = 0
+    
+    # 查找所有 __pycache__ 目录
+    for pycache_dir in project_root.rglob("__pycache__"):
+        try:
+            shutil.rmtree(pycache_dir)
+            cleaned_count += 1
+        except Exception as e:
+            logging.debug(f"清理缓存目录失败 {pycache_dir}: {e}")
+    
+    # 清理 .pyc 文件（可能在某些情况下存在于源码目录）
+    for pyc_file in project_root.rglob("*.pyc"):
+        try:
+            pyc_file.unlink()
+            cleaned_count += 1
+        except Exception:
+            pass
+    
+    if cleaned_count > 0:
+        logging.debug(f"已清理 {cleaned_count} 个 Python 缓存目录/文件")
     
     return cleaned_count
 

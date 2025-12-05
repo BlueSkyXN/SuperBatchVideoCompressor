@@ -155,26 +155,8 @@ def apply_cli_overrides(config: Dict[str, Any], args) -> Dict[str, Any]:
     if hasattr(args, 'no_keep_structure') and args.no_keep_structure:
         config["files"]["keep_structure"] = False
     
-    # 编码器覆盖
-    if hasattr(args, 'encoders') and args.encoders:
-        config["encoders"]["enabled"] = [e.strip() for e in args.encoders.split(",")]
-    if hasattr(args, 'nvenc_concurrent') and args.nvenc_concurrent != 3:
-        config["encoders"]["nvenc"]["max_concurrent"] = args.nvenc_concurrent
-    if hasattr(args, 'qsv_concurrent') and args.qsv_concurrent != 2:
-        config["encoders"]["qsv"]["max_concurrent"] = args.qsv_concurrent
-    if hasattr(args, 'cpu_concurrent') and args.cpu_concurrent != 4:
-        config["encoders"]["cpu"]["max_concurrent"] = args.cpu_concurrent
-    
     # 调度器覆盖
-    if hasattr(args, 'max_concurrent') and args.max_concurrent != 6:
+    if hasattr(args, 'max_concurrent') and args.max_concurrent != 5:
         config["scheduler"]["max_total_concurrent"] = args.max_concurrent
-    if hasattr(args, 'scheduler') and args.scheduler != "priority":
-        config["scheduler"]["strategy"] = args.scheduler
-    
-    # CPU 回退
-    if hasattr(args, 'cpu_fallback') and args.cpu_fallback:
-        config["encoders"]["cpu_fallback"] = True
-    if hasattr(args, 'enable_software_fallback') and args.enable_software_fallback:
-        config["encoders"]["cpu_fallback"] = True
     
     return config

@@ -138,24 +138,17 @@ DEFAULT_CONFIG = {
         "limit_on_software_encode": LIMIT_FPS_ON_SOFTWARE_ENCODE,
     },
     "encoders": {
-        "enabled": ["nvenc", "qsv"],
-        "cpu_fallback": True,
         "nvenc": {
             "enabled": True,
             "max_concurrent": 3,
-            "device": -1,
-            "fallback_to": "qsv",
         },
         "qsv": {
             "enabled": True,
             "max_concurrent": 2,
-            "device": None,
-            "fallback_to": "cpu",
         },
         "videotoolbox": {
             "enabled": False,
             "max_concurrent": 3,
-            "fallback_to": "cpu",
         },
         "cpu": {
             "enabled": True,
@@ -164,9 +157,7 @@ DEFAULT_CONFIG = {
         }
     },
     "scheduler": {
-        "max_total_concurrent": 6,
-        "strategy": "priority",
-        "retry_per_encoder": 1,
+        "max_total_concurrent": 5,
     },
     "files": {
         "min_size_mb": MIN_FILE_SIZE_MB,
