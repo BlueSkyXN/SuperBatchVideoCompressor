@@ -158,5 +158,11 @@ def apply_cli_overrides(config: Dict[str, Any], args) -> Dict[str, Any]:
     # 调度器覆盖
     if hasattr(args, 'max_concurrent') and args.max_concurrent != 5:
         config["scheduler"]["max_total_concurrent"] = args.max_concurrent
-    
+
+    # 运行模式覆盖
+    if hasattr(args, 'dry_run'):
+        config["dry_run"] = args.dry_run
+    else:
+        config["dry_run"] = False
+
     return config

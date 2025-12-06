@@ -38,14 +38,13 @@ from src.scheduler.advanced import (
 from src.utils.process import terminate_all_ffmpeg
 
 
-def run_batch(args, config: Dict[str, Any]) -> int:
+def run_batch(config: Dict[str, Any]) -> int:
     """
     执行批量压缩任务，行为与原 CLI run 保持一致。
-    
+
     Args:
-        args: CLI 解析结果（含 dry-run 等标志）
-        config: 已准备好的配置（含编码器检测结果）
-    
+        config: 已准备好的配置（含编码器检测结果、CLI覆盖、运行模式）
+
     Returns:
         进程退出码：0 成功，非 0 表示存在失败任务
     """
@@ -64,6 +63,7 @@ def run_batch(args, config: Dict[str, Any]) -> int:
     limit_fps_software_encode = config["fps"]["limit_on_software_encode"]
     max_bitrate_by_resolution = config["encoding"]["bitrate"].get("max_by_resolution")
     cpu_preset = config.get("encoders", {}).get("cpu", {}).get("preset", "medium")
+    dry_run = config.get("dry_run", False)
 
     # 创建高级调度器
     scheduler = create_advanced_scheduler(config)
@@ -128,7 +128,7 @@ def run_batch(args, config: Dict[str, Any]) -> int:
                 logging.info(f"  ... 还有 {total_files - 3} 个文件")
             logging.warning("如需保持目录结构，请在配置文件中设置 keep_structure: true 或移除 --no-keep-structure 参数")
 
-    if args.dry_run:
+    if dry_run:
         logging.info(f"[DRY RUN] 预览模式，不实际执行")
         for i, f in enumerate(video_files[:10], 1):
             logging.info(f"  {i}. {os.path.basename(f)}")

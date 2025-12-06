@@ -152,8 +152,8 @@ def main():
         if not hw_available and not cpu_available:
             logging.error("没有可用的编码器！请检查硬件和驱动。")
             return 1
-        
-        return run_batch(args, config)
+
+        return run_batch(config)
         
     except KeyboardInterrupt:
         logging.warning("用户中断操作")
