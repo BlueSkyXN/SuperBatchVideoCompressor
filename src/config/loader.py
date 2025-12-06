@@ -19,7 +19,6 @@ from src.config.defaults import (
     DEFAULT_OUTPUT_FOLDER,
     DEFAULT_LOG_FOLDER,
     DEFAULT_OUTPUT_CODEC,
-    DEFAULT_HW_ACCEL,
     MAX_FPS,
     MIN_FILE_SIZE_MB,
 )

@@ -7,7 +7,6 @@
 """
 
 import os
-import sys
 import shutil
 import signal
 import logging
@@ -77,7 +76,6 @@ def terminate_all_ffmpeg() -> None:
             logging.warning(f"终止进程时出错: {e}")
     
     # 等待进程退出，如果超时则强制杀死
-    import time
     for process in processes:
         try:
             if process.poll() is None:
@@ -106,8 +104,6 @@ def cleanup_temp_files(output_folder: str) -> int:
         return 0
     
     cleaned_count = 0
-    # 支持多种临时文件模式
-    temp_patterns = ["tmp_*.mp4", "tmp_*.mkv", "tmp_*.avi", "*.tmp", "*.temp"]
     
     for root, _, files in os.walk(output_folder):
         for file in files:

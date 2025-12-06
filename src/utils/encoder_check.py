@@ -9,7 +9,7 @@
 import subprocess
 import logging
 import platform
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 logger = logging.getLogger("EncoderCheck")
 

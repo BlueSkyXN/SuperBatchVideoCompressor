@@ -4,7 +4,6 @@
 编码器模块测试
 """
 
-import pytest
 import sys
 import os
 

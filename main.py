@@ -39,7 +39,7 @@ def _cleanup_pycache_early(project_root: Path = None) -> int:
 
 _cleanup_pycache_early()
 
-from cli import main
+from cli import main  # noqa: E402 确保清理后再导入 CLI
 
 
 if __name__ == "__main__":

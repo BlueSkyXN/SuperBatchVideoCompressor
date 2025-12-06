@@ -23,19 +23,16 @@ from src.core import (
     build_sw_encode_command,
 )
 from src.config.defaults import (
-    MIN_FILE_SIZE_MB,
     RESULT_SUCCESS,
     RESULT_SKIP_SIZE,
     RESULT_SKIP_EXISTS,
 )
 from src.scheduler.advanced import (
-    AdvancedScheduler,
     DecodeMode,
     EncoderType,
     create_advanced_scheduler,
     TaskResult,
 )
-from src.utils.process import terminate_all_ffmpeg
 
 
 def run_batch(config: Dict[str, Any]) -> int:
@@ -129,7 +126,7 @@ def run_batch(config: Dict[str, Any]) -> int:
             logging.warning("如需保持目录结构，请在配置文件中设置 keep_structure: true 或移除 --no-keep-structure 参数")
 
     if dry_run:
-        logging.info(f"[DRY RUN] 预览模式，不实际执行")
+        logging.info("[DRY RUN] 预览模式，不实际执行")
         for i, f in enumerate(video_files[:10], 1):
             logging.info(f"  {i}. {os.path.basename(f)}")
         if total_files > 10:

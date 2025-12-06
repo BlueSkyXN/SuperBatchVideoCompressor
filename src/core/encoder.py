@@ -8,7 +8,7 @@ FFmpeg 编码器模块
 
 import subprocess
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Any, Tuple
 
 from src.config.defaults import (
     HW_ENCODERS,
