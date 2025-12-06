@@ -168,7 +168,8 @@ class TestResolveOutputPaths:
             filepath, input_folder, output_folder, keep_structure=True
         )
         assert os.path.dirname(temp_filename) == os.path.dirname(new_filename)
-        assert temp_filename.startswith(os.path.join(output_folder, "tmp_"))
+        temp_prefix = Path(output_folder).joinpath("tmp_").as_posix()
+        assert Path(temp_filename).as_posix().startswith(temp_prefix)
 
         # 测试子目录文件
         filepath = "/input/subdir/video.mkv"
