@@ -6,8 +6,6 @@ import logging
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from src.config.loader import apply_cli_overrides
 from src.utils.logging import setup_logging
 
