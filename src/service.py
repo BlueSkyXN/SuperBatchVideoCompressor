@@ -256,16 +256,25 @@ def run_batch(config: Dict[str, Any]) -> int:
         filepath: str, encoder_type: EncoderType, decode_mode: DecodeMode
     ) -> TaskResult:
         """编码单个文件"""
+        import time
+        from src.core.video import get_duration, get_fps
+
+        # 获取任务ID（从调度器传入）
+        task_id = getattr(encode_file, "_current_task_id", 0)
+
         extra_ctx = {
             "file": os.path.basename(filepath),
             "enc": encoder_type.value,
             "decode": decode_mode.value,
+            "task_id": task_id,
         }
         stats = {
             "original_size": 0,
             "new_size": 0,
             "original_bitrate": 0,
             "new_bitrate": 0,
+            "encode_time": 0,
+            "task_id": task_id,
         }
 
         try:
@@ -274,15 +283,24 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             if file_size < min_file_size * 1024 * 1024:
                 logger.info(
-                    f"[SKIP] 文件小于 {min_file_size}MB: {filepath}", extra=extra_ctx
+                    f"[跳过] 文件小于 {min_file_size}MB: {filepath}", extra=extra_ctx
                 )
                 stats["status"] = RESULT_SKIP_SIZE
                 return TaskResult(success=True, filepath=filepath, stats=stats)
 
+            # 获取源文件信息
             original_bitrate = get_bitrate(filepath)
             width, height = get_resolution(filepath)
             source_codec = get_codec(filepath)
+            duration = get_duration(filepath)
+            fps = get_fps(filepath)
+
             stats["original_bitrate"] = original_bitrate
+            stats["duration"] = duration
+            stats["width"] = width
+            stats["height"] = height
+            stats["source_codec"] = source_codec
+            stats["fps"] = fps
 
             new_bitrate = calculate_target_bitrate(
                 original_bitrate,
@@ -292,7 +310,7 @@ def run_batch(config: Dict[str, Any]) -> int:
                 forced_bitrate,
                 max_bitrate_by_resolution,
             )
-            stats["new_bitrate"] = new_bitrate
+            stats["target_bitrate"] = new_bitrate
 
             new_filename, temp_filename = resolve_output_paths(
                 filepath, input_folder, output_folder, keep_structure
@@ -301,7 +319,7 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             if os.path.exists(new_filename):
                 logger.info(
-                    f"[SKIP] 输出文件已存在: {new_filename}", extra=extra_ctx
+                    f"[跳过] 输出文件已存在: {new_filename}", extra=extra_ctx
                 )
                 stats["status"] = RESULT_SKIP_EXISTS
                 return TaskResult(success=True, filepath=filepath, stats=stats)
@@ -316,8 +334,13 @@ def run_batch(config: Dict[str, Any]) -> int:
                 decode_mode,
             )
 
+            # 获取文件相对路径
+            rel_path = os.path.relpath(filepath, input_folder)
             logger.info(
-                f"[ENC] {encoder_type.value}/{decode_mode.value}: {os.path.basename(filepath)} -> {cmd_info['name']}",
+                f"[任务 {task_id}] [开始编码] {rel_path}\n"
+                f"    编码器: {cmd_info['name']}\n"
+                f"    源信息: {width}x{height} {source_codec.upper()} "
+                f"{original_bitrate/1000000:.2f}Mbps {fps:.1f}fps {duration/60:.1f}分钟",
                 extra=extra_ctx,
             )
 
@@ -326,16 +349,25 @@ def run_batch(config: Dict[str, Any]) -> int:
                 f'"{arg}"' if " " in str(arg) else str(arg) for arg in cmd_info["cmd"]
             )
             if print_cmd or verbose_logging:
-                logger.info(f"[CMD] FFmpeg 命令: {cmd_str}", extra=extra_ctx)
+                logger.info(f"[命令] {cmd_str}", extra=extra_ctx)
             else:
-                logger.debug(f"[CMD] FFmpeg 命令: {cmd_str}", extra=extra_ctx)
+                logger.debug(f"[命令] {cmd_str}", extra=extra_ctx)
+
+            # 记录开始时间
+            start_time = time.time()
 
             # 执行编码
             success, error = execute_ffmpeg(cmd_info["cmd"])
 
+            # 计算耗时
+            encode_time = time.time() - start_time
+            stats["encode_time"] = encode_time
+
             if not success:
                 if error:
-                    logger.error(f"[FAIL] FFmpeg 失败: {error}", extra=extra_ctx)
+                    logger.error(
+                        f"[任务 {task_id}] [失败] FFmpeg 错误: {error}", extra=extra_ctx
+                    )
                 if os.path.exists(temp_filename):
                     try:
                         os.remove(temp_filename)
@@ -356,15 +388,44 @@ def run_batch(config: Dict[str, Any]) -> int:
                     success=False, filepath=filepath, error=str(e), stats=stats
                 )
 
+            # 读取输出文件信息
             new_size = os.path.getsize(new_filename)
+            output_bitrate = get_bitrate(new_filename)
+            output_duration = get_duration(new_filename)
+            output_codec = get_codec(new_filename)
+
             stats["new_size"] = new_size
+            stats["output_bitrate"] = output_bitrate
+            stats["output_duration"] = output_duration
+            stats["output_codec"] = output_codec
             stats["status"] = RESULT_SUCCESS
             stats["method"] = cmd_info["name"]
 
-            compression_ratio = (1 - new_size / file_size) * 100 if file_size > 0 else 0
+            # 计算各种统计数据
+            compression_ratio = (
+                (1 - new_size / file_size) * 100 if file_size > 0 else 0
+            )
+            speed_ratio = duration / encode_time if encode_time > 0 else 0
+            avg_fps = (
+                (fps * duration) / encode_time if encode_time > 0 and duration > 0 else 0
+            )
+
+            # 格式化文件大小
+            def format_size(size_bytes):
+                for unit in ["B", "KB", "MB", "GB"]:
+                    if size_bytes < 1024:
+                        return f"{size_bytes:.2f}{unit}"
+                    size_bytes /= 1024
+                return f"{size_bytes:.2f}TB"
+
+            # 详细的完成日志
             logger.info(
-                f"[DONE] {encoder_type.value}: {os.path.basename(filepath)} | "
-                f"{cmd_info['name']} | 压缩率: {compression_ratio:.1f}%",
+                f"[任务 {task_id}] [完成] {rel_path}\n"
+                f"    编码器: {encoder_type.value.upper()} | 模式: {cmd_info['name']}\n"
+                f"    输入: {format_size(file_size)} {source_codec.upper()} {original_bitrate/1000000:.2f}Mbps\n"
+                f"    输出: {format_size(new_size)} {output_codec.upper()} {output_bitrate/1000000:.2f}Mbps\n"
+                f"    压缩率: {compression_ratio:.1f}% | 时长: {output_duration/60:.1f}分钟\n"
+                f"    耗时: {encode_time/60:.1f}分钟 | 速度: {speed_ratio:.2f}x | 平均: {avg_fps:.1f}fps",
                 extra=extra_ctx,
             )
 
@@ -372,7 +433,7 @@ def run_batch(config: Dict[str, Any]) -> int:
 
         except Exception as e:
             logger.error(
-                f"[FAIL] 处理 {filepath} 时发生错误: {e}", extra=extra_ctx
+                f"[任务 {task_id}] [异常] 处理 {filepath} 时发生错误: {e}", extra=extra_ctx
             )
             return TaskResult(
                 success=False, filepath=filepath, error=str(e), stats=stats
@@ -381,17 +442,22 @@ def run_batch(config: Dict[str, Any]) -> int:
     def process_file(filepath: str):
         nonlocal completed
 
+        # 传递任务ID到编码函数
+        with lock:
+            task_id = completed + 1
+            encode_file._current_task_id = task_id
+
         result = scheduler.schedule_task(filepath, encode_file)
 
         with lock:
             completed += 1
             retry_info = ""
             if result.retry_history:
-                retry_info = f" [尝试: {' → '.join(result.retry_history)}]"
+                retry_info = f" [重试路径: {' → '.join(result.retry_history)}]"
             if show_progress:
                 logger.info(
-                    f"[PROGRESS] {completed}/{total_files} ({completed/total_files*100:.1f}%){retry_info}",
-                    extra={"file": os.path.basename(filepath)},
+                    f"[进度] {completed}/{total_files} ({completed/total_files*100:.1f}%){retry_info}",
+                    extra={"file": os.path.basename(filepath), "task_id": task_id},
                 )
 
         return (filepath, result)

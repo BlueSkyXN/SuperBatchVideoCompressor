@@ -299,7 +299,7 @@ class AdvancedScheduler:
                     continue
 
                 retry_history.append(combo_str)
-                self.logger.info(f"[任务 {task_id}] 尝试 {combo_str}")
+                # 日志由 service.py 的 encode_file 负责，这里不重复记录
 
                 try:
                     # 再次检查关闭信号
@@ -336,8 +336,8 @@ class AdvancedScheduler:
 
                         error_msg = result.error or "未知错误"
                         task_state.errors.append(f"{combo_str}: {error_msg}")
-                        self.logger.warning(
-                            f"[任务 {task_id}] {combo_str} 失败: {error_msg}"
+                        self.logger.debug(
+                            f"[任务 {task_id}] 编码方式 {combo_str} 失败，准备回退: {error_msg}"
                         )
                         task_state.retry_count += 1
 
