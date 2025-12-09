@@ -26,6 +26,7 @@
 │   │   ├── advanced.py    # AdvancedScheduler 智能调度器
 │   │   └── __init__.py
 │   └── utils/             # 工具函数
+│       ├── __init__.py
 │       ├── files.py       # 视频文件枚举、硬件检测
 │       ├── logging.py     # 日志配置
 │       ├── process.py     # FFmpeg 进程管理、信号处理、临时文件清理
@@ -157,6 +158,7 @@ encoders:
     max_concurrent: 3
   cpu:
     enabled: true          # CPU 兜底
+    max_concurrent: 4
     preset: medium
 
 scheduler:
@@ -219,13 +221,17 @@ SUPPORTED_HW_DECODE_CODECS = {
 - 使用 `--print-cmd` 查看实际执行的 FFmpeg 命令
 
 ### encoder_check.py
-- `detect_available_encoders()`: 检测所有编码器可用性
+- `detect_available_encoders()`: 检测所有启用的编码器，返回实际可用的配置
+- `check_encoder_available()`: 检测单个编码器是否可用
 - `check_nvenc_available()`: 检测 NVENC
 - `check_qsv_available()`: 检测 QSV
 - `check_videotoolbox_available()`: 检测 VideoToolbox
+- `check_cpu_available()`: 检测 CPU 软编码
+- `print_encoder_status()`: 打印编码器状态摘要
 
 ### process.py
 - `register_process()` / `unregister_process()`: 跟踪 FFmpeg 进程
+- `is_shutdown_requested()`: 检查是否请求了关闭
 - `terminate_all_ffmpeg()`: 优雅终止所有进程
 - `cleanup_temp_files()`: 清理临时文件
 - `cleanup_pycache()`: 清理 Python 缓存

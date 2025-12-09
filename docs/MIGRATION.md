@@ -51,7 +51,7 @@ paths:
 #### 方式一：使用配置文件（推荐）
 
 ```bash
-# 单编码器模式（与旧程序最接近）
+# 使用默认配置文件 config.yaml
 python main.py
 
 # 或者指定配置文件
@@ -62,14 +62,14 @@ python main.py --config config.yaml
 
 ```bash
 # 完全通过命令行参数运行
-python main.py -i "F:/lada/output" -o "F:/lada/pre" -l "I:/BVC" --hw-accel nvenc -c hevc -w 3
+python main.py -i "F:/lada/output" -o "F:/lada/pre" -l "I:/BVC" -c hevc --max-concurrent 3
 ```
 
-#### 方式三：多GPU混合调度模式（新功能）
+#### 方式三：预览模式
 
 ```bash
-# 使用多编码器混合调度（推荐用于多GPU或混合硬件环境）
-python main.py --multi-gpu
+# 先预览任务计划，确认无误后再执行
+python main.py --dry-run
 ```
 
 ## ⚙️ 配置说明
@@ -97,11 +97,15 @@ encoding:
       2160: 9000000    # 4K: 9 Mbps
 
 encoders:
-  enabled: ["nvenc"]   # 只使用NVENC
-  cpu_fallback: false  # 不启用CPU回退（旧程序没有）
-
   nvenc:
+    enabled: true      # 只使用NVENC
     max_concurrent: 3  # 与旧程序相同
+  qsv:
+    enabled: false
+  videotoolbox:
+    enabled: false
+  cpu:
+    enabled: false     # 不启用CPU回退（旧程序没有）
 
 files:
   min_size_mb: 100     # 与旧程序相同
@@ -114,17 +118,22 @@ files:
 
 ```yaml
 encoders:
-  enabled: ["nvenc", "qsv"]  # 启用多个编码器
-  cpu_fallback: true          # 启用CPU兜底
-
   nvenc:
+    enabled: true             # 启用NVENC
     max_concurrent: 3
-    fallback_to: "qsv"        # NVENC失败时回退到QSV
+  qsv:
+    enabled: true             # 启用QSV
+    max_concurrent: 2
+  videotoolbox:
+    enabled: false            # macOS用户设为true
+  cpu:
+    enabled: true             # 启用CPU兜底
 
 scheduler:
-  strategy: "least_loaded"    # 使用负载均衡调度
-  max_total_concurrent: 6     # 提高总并发数
+  max_total_concurrent: 5     # 总并发数
 ```
+
+**智能回退机制**：新程序会自动在编码器之间回退（NVENC失败→QSV→CPU），无需手动配置回退路径。
 
 ## 🔄 功能对应关系
 
@@ -137,7 +146,7 @@ scheduler:
 | 硬编码最大码率 | `encoding.bitrate.max_by_resolution` | 分辨率封顶码率（新版可配置）|
 | `keep_structure_flag` | `files.keep_structure` | 保持目录结构 |
 | `min_file_size` | `files.min_size_mb` | 最小文件大小 |
-| `max_workers=3` | `-w 3` 或 `nvenc.max_concurrent: 3` | 并发数 |
+| `max_workers=3` | `--max-concurrent 3` 或 `nvenc.max_concurrent: 3` | 并发数 |
 
 ### 旧程序的回退机制
 
@@ -163,29 +172,33 @@ python main.py \
   -i "F:/lada/output" \
   -o "F:/lada/pre" \
   -l "I:/BVC" \
-  --hw-accel nvenc \
   -c hevc \
-  -w 3 \
+  --max-concurrent 3 \
   --min-size 100
 ```
 
-### 启用软件回退（推荐）
+### 使用配置文件（推荐）
 
 ```bash
-python main.py \
-  -i "F:/lada/output" \
-  -o "F:/lada/pre" \
-  --hw-accel nvenc \
-  --enable-software-fallback
+# 使用默认配置文件 config.yaml
+python main.py
+
+# 或者指定配置文件
+python main.py --config my_config.yaml
 ```
 
-### 多GPU混合调度（最强大）
+### 预览模式
 
 ```bash
-python main.py --multi-gpu \
-  --encoders nvenc,qsv \
-  --scheduler least_loaded \
-  --max-concurrent 6
+# 仅显示任务计划，不实际执行
+python main.py --dry-run
+```
+
+### 调试模式
+
+```bash
+# 启用详细日志和命令打印
+python main.py --verbose --print-cmd
 ```
 
 ## ⚠️ 注意事项
@@ -247,7 +260,15 @@ encoding:
 **新程序优化建议**：
 - 单GPU：保持3线程 `nvenc.max_concurrent: 3`
 - 双GPU：提高到6线程 `nvenc.max_concurrent: 6`
-- GPU+CPU混合：使用多编码器模式 `--multi-gpu`
+- GPU+CPU混合：在配置文件中启用多个编码器，如：
+  ```yaml
+  encoders:
+    nvenc: { enabled: true, max_concurrent: 3 }
+    qsv: { enabled: true, max_concurrent: 2 }
+    cpu: { enabled: true, max_concurrent: 2 }
+  scheduler:
+    max_total_concurrent: 7
+  ```
 
 ## 🐛 常见问题
 
@@ -264,8 +285,15 @@ A: 检查以下配置：
 A: 可以，使用以下配置：
 ```yaml
 encoders:
-  enabled: ["nvenc"]
-  cpu_fallback: false
+  nvenc:
+    enabled: true
+    max_concurrent: 3
+  qsv:
+    enabled: false
+  videotoolbox:
+    enabled: false
+  cpu:
+    enabled: false
 fps:
   limit_on_software_decode: false
   limit_on_software_encode: false
