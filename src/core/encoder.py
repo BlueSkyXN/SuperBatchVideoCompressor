@@ -8,7 +8,7 @@ FFmpeg 编码器模块
 
 import subprocess
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional, List
 
 from src.config.defaults import (
     HW_ENCODERS,
@@ -206,6 +206,10 @@ def build_hw_encode_command(
     use_hw_decode: bool = True,
     limit_fps: bool = False,
     max_fps: int = 30,
+    audio_bitrate: Optional[str] = None,
+    map_args: Optional[List[str]] = None,
+    audio_args: Optional[List[str]] = None,
+    subtitle_args: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     构建硬件编码命令
@@ -224,6 +228,9 @@ def build_hw_encode_command(
     Returns:
         {"name": str, "cmd": list, "encoder": str} 或 None（如果不支持）
     """
+    if audio_bitrate is None:
+        audio_bitrate = AUDIO_BITRATE
+
     hw_config = HW_ENCODERS.get(hw_accel, {})
     hw_encoder = hw_config.get(output_codec)
 
@@ -251,8 +258,16 @@ def build_hw_encode_command(
             if hwaccel_output_format:
                 cmd.extend(["-hwaccel_output_format", hwaccel_output_format])
             cmd.extend(["-i", filepath])
+            if map_args:
+                cmd.extend(map_args)
             cmd.extend(["-c:v", hw_encoder, "-b:v", str(bitrate)])
-            cmd.extend(["-c:a", "aac", "-b:a", AUDIO_BITRATE, temp_filename])
+            if audio_args is not None:
+                cmd.extend(audio_args)
+            else:
+                cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate])
+            if subtitle_args:
+                cmd.extend(subtitle_args)
+            cmd.append(temp_filename)
             return {
                 "name": f"{hw_display} ({codec_display}, 硬解+硬编)",
                 "cmd": cmd,
@@ -266,6 +281,8 @@ def build_hw_encode_command(
 
     # 软解模式（硬解不支持或未启用）
     cmd = ["ffmpeg", "-y", "-hide_banner", "-i", filepath]
+    if map_args:
+        cmd.extend(map_args)
 
     if limit_fps:
         cmd.extend(["-vf", f"fps={max_fps}"])
@@ -274,7 +291,13 @@ def build_hw_encode_command(
         name = f"{hw_display} ({codec_display}, 软解+硬编)"
 
     cmd.extend(["-c:v", hw_encoder, "-b:v", str(bitrate)])
-    cmd.extend(["-c:a", "aac", "-b:a", AUDIO_BITRATE, temp_filename])
+    if audio_args is not None:
+        cmd.extend(audio_args)
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate])
+    if subtitle_args:
+        cmd.extend(subtitle_args)
+    cmd.append(temp_filename)
 
     return {"name": name, "cmd": cmd, "encoder": hw_accel}
 
@@ -287,6 +310,10 @@ def build_sw_encode_command(
     limit_fps: bool = False,
     max_fps: int = 30,
     preset: str = "medium",
+    audio_bitrate: Optional[str] = None,
+    map_args: Optional[List[str]] = None,
+    audio_args: Optional[List[str]] = None,
+    subtitle_args: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     构建软件编码命令（CPU）
@@ -303,9 +330,14 @@ def build_sw_encode_command(
     Returns:
         {"name": str, "cmd": list, "encoder": str}
     """
+    if audio_bitrate is None:
+        audio_bitrate = AUDIO_BITRATE
+
     sw_encoder = SW_ENCODERS.get(output_codec, "libx264")
 
     cmd = ["ffmpeg", "-y", "-hide_banner", "-i", filepath]
+    if map_args:
+        cmd.extend(map_args)
 
     if limit_fps:
         cmd.extend(["-vf", f"fps={max_fps}"])
@@ -321,8 +353,13 @@ def build_sw_encode_command(
     elif sw_encoder == "libsvtav1":
         cmd.extend(["-preset", "6"])
 
-    cmd.extend(
-        ["-b:v", str(bitrate), "-c:a", "aac", "-b:a", AUDIO_BITRATE, temp_filename]
-    )
+    cmd.extend(["-b:v", str(bitrate)])
+    if audio_args is not None:
+        cmd.extend(audio_args)
+    else:
+        cmd.extend(["-c:a", "aac", "-b:a", audio_bitrate])
+    if subtitle_args:
+        cmd.extend(subtitle_args)
+    cmd.append(temp_filename)
 
     return {"name": name, "cmd": cmd, "encoder": "cpu"}

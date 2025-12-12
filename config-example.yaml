@@ -20,7 +20,44 @@ paths:
 # ============================================================
 encoding:
   codec: hevc              # 输出编码: hevc, avc, av1
-  audio_bitrate: "128k"    # 音频码率
+  audio_bitrate: "128k"    # 默认音频目标码率（需要转码时生效，可写 "128k"/"1M"/bps 数字）
+
+  # ============================================================
+  # 音频/字幕高级策略（可选）
+  # - 不配置时行为与旧版一致：仅保留第一音轨并转 AAC@audio_bitrate，字幕丢弃
+  # - 只要启用任一高级选项，会对每个文件额外运行一次 ffprobe（轻微增加耗时）
+  # ============================================================
+  audio:
+    enabled: true               # false=不输出音频（等价于 ffmpeg -an）
+    target_codec: aac           # 音频转码目标编码（仅在转码时使用）
+    target_bitrate: null        # 音频转码目标码率；null=沿用 audio_bitrate
+    channels: keep              # 声道控制：keep|stereo|mono|5.1
+    sample_rate: keep           # 采样率控制：keep|44100|48000
+
+    # copy 策略：
+    # off:       总是转码到 target_codec/target_bitrate
+    # aac_only:  仅当源音频为 AAC 且码率不高于目标时 copy
+    # smart:     源 codec 在白名单且满足码率条件时 copy（码率未知则转码）
+    # always:    只要源 codec 在白名单就尝试 copy（失败会自动回退转码）
+    copy_policy: off
+    copy_allow_codecs: ["aac", "mp3"]   # 允许 copy 的源音频编码（建议保持 MP4 友好编码）
+    copy_max_bitrate_ratio: 1.0        # 源码率 <= 目标码率*ratio 才 copy（1.0=不高于目标）
+    aac_adtstoasc: true                # copy AAC 到 MP4 时自动加 aac_adtstoasc bitstream filter
+
+    tracks:
+      keep: first               # 音轨保留：first|all|language_prefer
+      prefer_language: ["zho","chi","eng"]  # language_prefer 时的语言优先级
+      drop_commentary: false    # true=优先跳过 commentary 音轨
+
+    # 常见用法示例：
+    # 1) 只压视频保真音频：copy_policy: always
+    # 2) 保留全部音轨但压缩：tracks.keep: all + copy_policy: off
+    # 3) 多语言中优先英文主轨：tracks.keep: language_prefer + prefer_language: ["eng"]
+
+  subtitles:
+    keep: none                  # 字幕策略：none|mov_text|copy
+                                # mov_text=转 MP4 内嵌字幕；copy=尝试原样拷贝（不兼容会自动回退丢弃）
+    languages: ["zho","eng"]    # 仅保留这些语言的字幕（空数组=保留全部）
 
   # 码率计算规则（优先级从高到低）：
   # 1. forced > 0: 强制使用指定码率，忽略其他规则

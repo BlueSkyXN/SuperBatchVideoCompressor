@@ -9,7 +9,7 @@
 import os
 import logging
 import concurrent.futures
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.core import (
     get_video_files,
@@ -22,6 +22,7 @@ from src.core import (
     build_hw_encode_command,
     build_sw_encode_command,
 )
+from src.core.media_plan import build_stream_plan
 from src.config.defaults import (
     RESULT_SUCCESS,
     RESULT_SKIP_SIZE,
@@ -57,6 +58,7 @@ def run_batch(config: Dict[str, Any]) -> int:
     forced_bitrate = config["encoding"]["bitrate"]["forced"]
     keep_structure = config["files"]["keep_structure"]
     output_codec = config["encoding"]["codec"]
+    audio_bitrate = config["encoding"]["audio_bitrate"]
     max_fps = config["fps"]["max"]
     limit_fps_software_decode = config["fps"]["limit_on_software_decode"]
     limit_fps_software_encode = config["fps"]["limit_on_software_encode"]
@@ -195,6 +197,7 @@ def run_batch(config: Dict[str, Any]) -> int:
         source_codec: str,
         encoder_type: EncoderType,
         decode_mode: DecodeMode,
+        stream_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """根据编码器类型和解码模式构建命令"""
         hw_accel_map = {
@@ -204,6 +207,9 @@ def run_batch(config: Dict[str, Any]) -> int:
             EncoderType.CPU: "cpu",
         }
         hw_accel = hw_accel_map.get(encoder_type, "cpu")
+        map_args = stream_plan.get("map_args") if stream_plan else None
+        audio_args = stream_plan.get("audio_args") if stream_plan else None
+        subtitle_args = stream_plan.get("subtitle_args") if stream_plan else None
 
         # CPU 软编码
         if encoder_type == EncoderType.CPU:
@@ -219,6 +225,10 @@ def run_batch(config: Dict[str, Any]) -> int:
                 limit_fps=limit_fps,
                 max_fps=max_fps,
                 preset=cpu_preset,
+                audio_bitrate=audio_bitrate,
+                map_args=map_args,
+                audio_args=audio_args,
+                subtitle_args=subtitle_args,
             )
 
         # 硬件编码
@@ -237,6 +247,10 @@ def run_batch(config: Dict[str, Any]) -> int:
             use_hw_decode=use_hw_decode,
             limit_fps=limit_fps,
             max_fps=max_fps,
+            audio_bitrate=audio_bitrate,
+            map_args=map_args,
+            audio_args=audio_args,
+            subtitle_args=subtitle_args,
         )
 
         if result is None:
@@ -249,6 +263,10 @@ def run_batch(config: Dict[str, Any]) -> int:
                 limit_fps=limit_fps_software_encode,
                 max_fps=max_fps,
                 preset=cpu_preset,
+                audio_bitrate=audio_bitrate,
+                map_args=map_args,
+                audio_args=audio_args,
+                subtitle_args=subtitle_args,
             )
 
         return result
@@ -326,6 +344,7 @@ def run_batch(config: Dict[str, Any]) -> int:
                 return TaskResult(success=True, filepath=filepath, stats=stats)
 
             # 构建编码命令
+            stream_plan = build_stream_plan(filepath, config["encoding"])
             cmd_info = build_encode_command(
                 filepath,
                 temp_filename,
@@ -333,7 +352,10 @@ def run_batch(config: Dict[str, Any]) -> int:
                 source_codec,
                 encoder_type,
                 decode_mode,
+                stream_plan=stream_plan,
             )
+            cmd_info["used_audio_copy"] = stream_plan.get("used_audio_copy", False)
+            cmd_info["used_subtitle_copy"] = stream_plan.get("used_subtitle_copy", False)
 
             # 获取文件相对路径
             rel_path = os.path.relpath(filepath, input_folder)
@@ -359,6 +381,46 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             # 执行编码
             success, error = execute_ffmpeg(cmd_info["cmd"])
+
+            # copy 模式失败时，尝试一次安全回退（禁用 copy/字幕）
+            if (
+                not success
+                and (cmd_info.get("used_audio_copy") or cmd_info.get("used_subtitle_copy"))
+            ):
+                from copy import deepcopy
+
+                safe_encoding = deepcopy(config["encoding"])
+                safe_encoding.setdefault("audio", {})
+                safe_encoding["audio"]["copy_policy"] = "off"
+                safe_encoding.setdefault("subtitles", {})
+                safe_encoding["subtitles"]["keep"] = "none"
+
+                safe_plan = build_stream_plan(filepath, safe_encoding)
+                safe_cmd_info = build_encode_command(
+                    filepath,
+                    temp_filename,
+                    new_bitrate,
+                    source_codec,
+                    encoder_type,
+                    decode_mode,
+                    stream_plan=safe_plan,
+                )
+
+                logger.warning(
+                    f"[任务 {task_label}] copy/字幕保留失败，使用安全模式重试一次",
+                    extra=extra_ctx,
+                )
+                success, error = execute_ffmpeg(safe_cmd_info["cmd"])
+                if success:
+                    logger.debug(
+                        f"[任务 {task_label}] 安全模式重试成功", extra=extra_ctx
+                    )
+                    cmd_info = safe_cmd_info
+                else:
+                    logger.debug(
+                        f"[任务 {task_label}] 安全模式重试仍失败: {error}",
+                        extra=extra_ctx,
+                    )
 
             # 计算耗时
             encode_time = time.time() - start_time

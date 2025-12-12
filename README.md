@@ -14,6 +14,7 @@ SBVC 是一个基于 FFmpeg 的批量视频压缩命令行工具，支持 NVENC 
 - **进程管理**：Ctrl+C 自动终止所有 FFmpeg 进程，启动时清理临时文件
 - 自动按分辨率计算目标码率
 - 可保持输入目录结构输出
+- **音频/字幕策略可配置**：支持智能 copy、多音轨保留/语言优先、字幕可选保留
 - 日志/控制台可配置：支持彩色或纯文本、JSON 行输出、静默/进度开关、打印完整 FFmpeg 命令
 
 ## 硬件编码器
@@ -52,9 +53,14 @@ python main.py --dry-run
   - `enabled: true` 表示"想用"，启动时自动检测是否真正可用
   - NVENC / QSV / VideoToolbox / CPU 可选
 
-- **编码参数**：`encoding` - 输出编码、码率、音频设置
+- **编码参数**：`encoding` - 输出视频/音频/字幕策略
   - `codec`: hevc/avc/av1
   - `bitrate`: 支持强制码率、压缩比例、分辨率自适应封顶
+  - `audio_bitrate`: 默认音频目标码率（需要转码时生效）
+  - `audio`: 可选高级音频策略（音轨选择、智能 copy、多音轨、声道/采样率）
+  - `subtitles`: 可选字幕保留策略（none/mov_text/copy，支持按语言筛选）
+
+  未配置 `audio`/`subtitles` 时，默认只保留第一音轨并转 AAC@`audio_bitrate`，字幕丢弃，行为与旧版一致。
 
 - **帧率限制**：`fps` - 最大帧率、软解/软编时是否限帧
 
