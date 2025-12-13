@@ -389,8 +389,7 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             # copy 模式失败时，尝试一次安全回退（禁用 copy/字幕）
             if not success and (
-                cmd_info.get("used_audio_copy")
-                or cmd_info.get("used_subtitle_copy")
+                cmd_info.get("used_audio_copy") or cmd_info.get("used_subtitle_copy")
             ):
                 from copy import deepcopy
 
@@ -435,7 +434,8 @@ def run_batch(config: Dict[str, Any]) -> int:
             if not success:
                 if error:
                     logger.error(
-                        f"[任务 {task_label}] [失败] FFmpeg 错误: {error}", extra=extra_ctx
+                        f"[任务 {task_label}] [失败] FFmpeg 错误: {error}",
+                        extra=extra_ctx,
                     )
                 if os.path.exists(temp_filename):
                     try:
