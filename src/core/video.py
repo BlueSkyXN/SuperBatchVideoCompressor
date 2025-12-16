@@ -8,6 +8,7 @@
 
 import subprocess
 import logging
+from typing import Optional
 
 
 def get_bitrate(filepath: str) -> int:
@@ -181,3 +182,37 @@ def get_fps(filepath: str) -> float:
         # 默认 30fps，防止异常帧率影响限帧/码率决策
         logging.warning(f"无法获取帧率 {filepath}。错误: {e}")
         return 30.0
+
+
+def get_audio_bitrate(filepath: str) -> Optional[int]:
+    """
+    获取文件第一条音频流的码率（bps）。
+
+    说明：
+    - 仅用于“音频目标码率”场景的预检查，避免源音频码率低于目标码率时反向增大体积。
+    - 若无音频流或无法探测码率，返回 None。
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=bit_rate",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            filepath,
+        ]
+        output = (
+            subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+            .decode("utf-8")
+            .strip()
+        )
+        if not output or output.upper() == "N/A":
+            return None
+        return int(output)
+    except Exception as e:
+        logging.debug(f"无法获取音频码率 {filepath}，将跳过按码率 copy 判断。错误: {e}")
+        return None

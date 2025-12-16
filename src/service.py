@@ -9,7 +9,7 @@
 import os
 import logging
 import concurrent.futures
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from src.core import (
     get_video_files,
@@ -22,7 +22,6 @@ from src.core import (
     build_hw_encode_command,
     build_sw_encode_command,
 )
-from src.core.media_plan import build_stream_plan
 from src.config.defaults import (
     RESULT_SUCCESS,
     RESULT_SKIP_SIZE,
@@ -57,6 +56,7 @@ def run_batch(config: Dict[str, Any]) -> int:
     force_bitrate = config["encoding"]["bitrate"]["forced"] > 0
     forced_bitrate = config["encoding"]["bitrate"]["forced"]
     keep_structure = config["files"]["keep_structure"]
+    skip_existing = config["files"].get("skip_existing", True)
     output_codec = config["encoding"]["codec"]
     audio_bitrate = config["encoding"]["audio_bitrate"]
     max_fps = config["fps"]["max"]
@@ -160,6 +160,7 @@ def run_batch(config: Dict[str, Any]) -> int:
     files_to_process = []
     completed = 0
     skipped_count = 0
+    overwrite_count = 0
     lock = threading.Lock()
 
     # 预检查输出是否已存在
@@ -167,7 +168,7 @@ def run_batch(config: Dict[str, Any]) -> int:
         output_path, _ = resolve_output_paths(
             filepath, input_folder, output_folder, keep_structure
         )
-        if os.path.exists(output_path):
+        if os.path.exists(output_path) and skip_existing:
             logger.info(
                 f"[SKIP] 输出已存在: {os.path.basename(output_path)}",
                 extra={"file": os.path.basename(filepath)},
@@ -184,10 +185,14 @@ def run_batch(config: Dict[str, Any]) -> int:
             )
             skipped_count += 1
             continue
+        if os.path.exists(output_path) and not skip_existing:
+            overwrite_count += 1
         files_to_process.append(filepath)
 
     if skipped_count > 0:
         logger.info(f"预检查: {skipped_count} 个文件已存在，跳过")
+    if overwrite_count > 0:
+        logger.warning(f"预检查: {overwrite_count} 个输出已存在，将覆盖（skip_existing=false）")
 
     total_tasks = len(files_to_process)
     logger.info(f"待处理: {total_tasks} 个文件")
@@ -199,8 +204,9 @@ def run_batch(config: Dict[str, Any]) -> int:
         source_codec: str,
         encoder_type: EncoderType,
         decode_mode: DecodeMode,
-        stream_plan: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        audio_args: Optional[List[str]] = None,
+        subtitle_args: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """根据编码器类型和解码模式构建命令"""
         hw_accel_map = {
             EncoderType.NVENC: "nvenc",
@@ -209,9 +215,7 @@ def run_batch(config: Dict[str, Any]) -> int:
             EncoderType.CPU: "cpu",
         }
         hw_accel = hw_accel_map.get(encoder_type, "cpu")
-        map_args = stream_plan.get("map_args") if stream_plan else None
-        audio_args = stream_plan.get("audio_args") if stream_plan else None
-        subtitle_args = stream_plan.get("subtitle_args") if stream_plan else None
+        map_args = None
 
         # CPU 软编码
         if encoder_type == EncoderType.CPU:
@@ -255,35 +259,68 @@ def run_batch(config: Dict[str, Any]) -> int:
             subtitle_args=subtitle_args,
         )
 
-        if result is None:
-            # 硬件不支持此编码格式，回退到 CPU
-            return build_sw_encode_command(
-                filepath,
-                temp_filename,
-                bitrate,
-                output_codec,
-                limit_fps=limit_fps_software_encode,
-                max_fps=max_fps,
-                preset=cpu_preset,
-                audio_bitrate=audio_bitrate,
-                map_args=map_args,
-                audio_args=audio_args,
-                subtitle_args=subtitle_args,
-            )
-
         return result
 
+    def normalize_audio_mode(value: Any) -> str:
+        mode = str(value or "transcode").strip().lower()
+        if mode in ("off", "copy", "transcode", "auto"):
+            return mode
+        return "transcode"
+
+    def resolve_audio_mode(audio_cfg: Dict[str, Any]) -> str:
+        raw_mode = audio_cfg.get("mode")
+        if raw_mode not in (None, "", "null"):
+            return normalize_audio_mode(raw_mode)
+
+        # 向后兼容：旧配置里 audio.enabled=false 表示关闭音频
+        if audio_cfg.get("enabled") is False:
+            return "off"
+
+        # 向后兼容：旧配置里 copy_policy!=off 表示尝试 copy（简化后等价于 auto）
+        copy_policy = str(audio_cfg.get("copy_policy", "off")).strip().lower()
+        if copy_policy and copy_policy != "off":
+            return "auto"
+
+        return "transcode"
+
+    def build_audio_args(encoding_cfg: Dict[str, Any], mode: str) -> List[str]:
+        audio_cfg = encoding_cfg.get("audio") or {}
+        mode = normalize_audio_mode(mode)
+
+        if mode == "off":
+            return ["-an"]
+        if mode == "copy":
+            return ["-c:a", "copy"]
+
+        codec = str(audio_cfg.get("codec") or audio_cfg.get("target_codec") or "aac")
+        codec = codec.strip() or "aac"
+        bitrate = audio_cfg.get("bitrate")
+        if bitrate is None:
+            bitrate = audio_cfg.get("target_bitrate")
+        if bitrate is None:
+            bitrate = encoding_cfg.get("audio_bitrate") or audio_bitrate
+
+        args = ["-c:a", codec]
+        if bitrate not in (None, "", "null"):
+            args.extend(["-b:a", str(bitrate)])
+        return args
+
     def encode_file(
-        filepath: str, encoder_type: EncoderType, decode_mode: DecodeMode
+        filepath: str,
+        encoder_type: EncoderType,
+        decode_mode: DecodeMode,
+        *,
+        task_id: int = 0,
+        total_tasks_count: int = 0,
     ) -> TaskResult:
         """编码单个文件"""
         import time
-        from src.core.video import get_duration, get_fps
+        from src.core.encoder import parse_bitrate_to_bps
+        from src.core.video import get_duration, get_fps, get_audio_bitrate
 
-        # 获取任务ID（从外部传入）
-        task_id = getattr(encode_file, "_current_task_id", 0)
-        total_tasks = getattr(encode_file, "_total_tasks", 0)
-        task_label = f"{task_id}/{total_tasks}" if total_tasks > 0 else str(task_id)
+        task_label = (
+            f"{task_id}/{total_tasks_count}" if total_tasks_count > 0 else str(task_id)
+        )
 
         extra_ctx = {
             "file": os.path.basename(filepath),
@@ -341,13 +378,55 @@ def run_batch(config: Dict[str, Any]) -> int:
             )
             os.makedirs(os.path.dirname(new_filename), exist_ok=True)
 
-            if os.path.exists(new_filename):
+            if os.path.exists(new_filename) and skip_existing:
                 logger.info(f"[跳过] 输出文件已存在: {new_filename}", extra=extra_ctx)
                 stats["status"] = RESULT_SKIP_EXISTS
                 return TaskResult(success=True, filepath=filepath, stats=stats)
 
+            encoding_cfg = config.get("encoding", {})
+            audio_cfg = encoding_cfg.get("audio") or {}
+            audio_mode = resolve_audio_mode(audio_cfg)
+
+            # 方案1：不做显式 -map，不做 ffprobe 音轨探测
+            # 始终 -sn 丢弃字幕，音频按 mode 决定 copy/转码/关闭
+            subtitle_args = ["-sn"]
+            audio_copy_fallback = False
+            retry_audio_args = None
+
+            if audio_mode == "auto":
+                audio_copy_fallback = True
+                audio_args = build_audio_args(encoding_cfg, "copy")
+                retry_audio_args = build_audio_args(encoding_cfg, "transcode")
+            elif audio_mode == "transcode":
+                transcode_audio_args = build_audio_args(encoding_cfg, "transcode")
+                target_bps = None
+                if "-b:a" in transcode_audio_args:
+                    idx = transcode_audio_args.index("-b:a")
+                    if idx + 1 < len(transcode_audio_args):
+                        target_bps = parse_bitrate_to_bps(transcode_audio_args[idx + 1])
+
+                source_audio_bps = (
+                    get_audio_bitrate(filepath) if target_bps is not None else None
+                )
+                if (
+                    source_audio_bps is not None
+                    and target_bps is not None
+                    and source_audio_bps <= target_bps
+                ):
+                    audio_copy_fallback = True
+                    retry_audio_args = transcode_audio_args
+                    audio_args = build_audio_args(encoding_cfg, "copy")
+                    logger.debug(
+                        f"[任务 {task_label}] 音频源码率 {source_audio_bps/1000:.0f}kbps "
+                        f"<= 目标 {target_bps/1000:.0f}kbps，改用 copy",
+                        extra=extra_ctx,
+                    )
+                else:
+                    audio_args = transcode_audio_args
+            else:
+                audio_args = build_audio_args(encoding_cfg, audio_mode)
+
             # 构建编码命令
-            stream_plan = build_stream_plan(filepath, config["encoding"])
             cmd_info = build_encode_command(
                 filepath,
                 temp_filename,
@@ -355,12 +434,21 @@ def run_batch(config: Dict[str, Any]) -> int:
                 source_codec,
                 encoder_type,
                 decode_mode,
-                stream_plan=stream_plan,
+                audio_args=audio_args,
+                subtitle_args=subtitle_args,
             )
-            cmd_info["used_audio_copy"] = stream_plan.get("used_audio_copy", False)
-            cmd_info["used_subtitle_copy"] = stream_plan.get(
-                "used_subtitle_copy", False
-            )
+            if cmd_info is None:
+                error_msg = f"{encoder_type.value} 不支持输出编码 {output_codec}"
+                logger.warning(
+                    f"[任务 {task_label}] [失败] {error_msg}",
+                    extra=extra_ctx,
+                )
+                return TaskResult(
+                    success=False,
+                    filepath=filepath,
+                    error=error_msg,
+                    stats=stats,
+                )
 
             # 获取文件相对路径
             rel_path = os.path.relpath(filepath, input_folder)
@@ -387,45 +475,35 @@ def run_batch(config: Dict[str, Any]) -> int:
             # 执行编码
             success, error = execute_ffmpeg(cmd_info["cmd"])
 
-            # copy 模式失败时，尝试一次安全回退（禁用 copy/字幕）
-            if not success and (
-                cmd_info.get("used_audio_copy") or cmd_info.get("used_subtitle_copy")
-            ):
-                from copy import deepcopy
-
-                safe_encoding = deepcopy(config["encoding"])
-                safe_encoding.setdefault("audio", {})
-                safe_encoding["audio"]["copy_policy"] = "off"
-                safe_encoding.setdefault("subtitles", {})
-                safe_encoding["subtitles"]["keep"] = "none"
-
-                safe_plan = build_stream_plan(filepath, safe_encoding)
-                safe_cmd_info = build_encode_command(
+            # audio.mode=auto 或 transcode+按码率改用copy：优先 copy，失败则回退转码重试一次
+            if not success and audio_copy_fallback and retry_audio_args is not None:
+                retry_cmd_info = build_encode_command(
                     filepath,
                     temp_filename,
                     new_bitrate,
                     source_codec,
                     encoder_type,
                     decode_mode,
-                    stream_plan=safe_plan,
+                    audio_args=retry_audio_args,
+                    subtitle_args=subtitle_args,
                 )
-
-                logger.warning(
-                    f"[任务 {task_label}] copy/字幕保留失败，使用安全模式重试一次",
-                    extra=extra_ctx,
-                )
-                success, error = execute_ffmpeg(safe_cmd_info["cmd"])
-                if success:
+                if retry_cmd_info is None:
                     logger.debug(
-                        f"[任务 {task_label}] 安全模式重试成功",
+                        f"[任务 {task_label}] audio 回退命令构建失败（编码器不支持）",
                         extra=extra_ctx,
                     )
-                    cmd_info = safe_cmd_info
                 else:
-                    logger.debug(
-                        f"[任务 {task_label}] 安全模式重试仍失败: {error}",
+                    logger.warning(
+                        f"[任务 {task_label}] 音频 copy 失败，回退转码重试一次",
                         extra=extra_ctx,
                     )
+                    success, error = execute_ffmpeg(retry_cmd_info["cmd"])
+                    if success:
+                        logger.debug(
+                            f"[任务 {task_label}] 音频回退转码重试成功",
+                            extra=extra_ctx,
+                        )
+                        cmd_info = retry_cmd_info
 
             # 计算耗时
             encode_time = time.time() - start_time
@@ -451,6 +529,8 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             # 移动文件
             try:
+                if not skip_existing and os.path.exists(new_filename):
+                    os.remove(new_filename)
                 shutil.move(temp_filename, new_filename)
             except Exception as e:
                 return TaskResult(
@@ -515,11 +595,18 @@ def run_batch(config: Dict[str, Any]) -> int:
     def process_file(filepath: str, task_id: int):
         nonlocal completed
 
-        # 传递任务ID和总任务数到编码函数
-        encode_file._current_task_id = task_id
-        encode_file._total_tasks = total_tasks
+        def encode_with_task_context(
+            fp: str, encoder_type: EncoderType, decode_mode: DecodeMode
+        ) -> TaskResult:
+            return encode_file(
+                fp,
+                encoder_type,
+                decode_mode,
+                task_id=task_id,
+                total_tasks_count=total_tasks,
+            )
 
-        result = scheduler.schedule_task(filepath, encode_file)
+        result = scheduler.schedule_task(filepath, encode_with_task_context)
 
         with lock:
             completed += 1

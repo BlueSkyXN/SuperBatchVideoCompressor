@@ -19,6 +19,54 @@ from src.config.defaults import (
 )
 
 
+def parse_bitrate_to_bps(value: Any) -> Optional[int]:
+    """
+    将 FFmpeg 风格的码率值解析为 bps（bit/s）。
+
+    支持示例：
+    - "128k" / "128kbps"
+    - "1M"
+    - "64000"
+    - 128000
+
+    无法解析或未设置时返回 None。
+    """
+    if value is None or value is False or value is True:
+        return None
+
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    lowered = text.lower().replace(" ", "")
+    if lowered in ("null", "none"):
+        return None
+
+    if lowered.endswith("bps"):
+        lowered = lowered[:-3]
+
+    multiplier = 1
+    if lowered.endswith("k"):
+        multiplier = 1000
+        lowered = lowered[:-1]
+    elif lowered.endswith("m"):
+        multiplier = 1000_000
+        lowered = lowered[:-1]
+    elif lowered.endswith("g"):
+        multiplier = 1000_000_000
+        lowered = lowered[:-1]
+
+    try:
+        return int(float(lowered) * multiplier)
+    except ValueError:
+        return None
+
+
 def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
     """
     执行 FFmpeg 命令并检查错误

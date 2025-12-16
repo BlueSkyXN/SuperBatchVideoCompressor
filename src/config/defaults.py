@@ -147,28 +147,16 @@ DEFAULT_CONFIG = {
     "encoding": {
         "codec": DEFAULT_OUTPUT_CODEC,
         "audio_bitrate": AUDIO_BITRATE,
-        # 音频处理高级配置（可选）
-        # 不配置时，默认行为与旧版一致：第一音轨 → AAC@audio_bitrate，且不保留字幕
+        # 音频处理（简化版）
+        # - 不显式 -map，不做 ffprobe 音轨探测（默认只保留 ffmpeg 选中的第一音频流）
+        # - 始终丢弃字幕（-sn），避免 MP4 字幕兼容问题
+        # - 仅支持：off/copy/transcode/auto
+        #   - transcode：仅当源音频码率 > 目标码率时才转码，否则优先 copy（copy 失败会回退转码）
+        #   - auto：总是先 copy，失败则转码重试一次
         "audio": {
-            "enabled": True,
-            "target_codec": "aac",
-            "target_bitrate": None,  # None 表示沿用 audio_bitrate
-            "channels": "keep",  # keep|stereo|mono|5.1
-            "sample_rate": "keep",  # keep|44100|48000
-            "copy_policy": "off",  # off|aac_only|smart|always
-            "copy_allow_codecs": ["aac", "mp3"],
-            "copy_max_bitrate_ratio": 1.0,
-            "aac_adtstoasc": True,
-            "tracks": {
-                "keep": "first",  # first|all|language_prefer
-                "prefer_language": ["zho", "chi", "eng"],
-                "drop_commentary": False,
-            },
-        },
-        # 字幕处理高级配置（可选）
-        "subtitles": {
-            "keep": "none",  # none|mov_text|copy
-            "languages": ["zho", "eng"],
+            "mode": "transcode",  # off|copy|transcode|auto
+            "codec": "aac",  # transcode 时的目标音频编码
+            "bitrate": None,  # None=沿用 audio_bitrate
         },
         "bitrate": {
             "forced": 0,

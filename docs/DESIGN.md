@@ -20,8 +20,6 @@
 │   ├── core/              # 核心编码逻辑
 │   │   ├── video.py       # ffprobe 获取视频信息
 │   │   ├── encoder.py     # 码率计算、编码命令构建、FFmpeg 执行
-│   │   ├── streams.py     # ffprobe 获取音频/字幕 streams
-│   │   ├── media_plan.py  # 音频/字幕策略决策与 map 生成
 │   │   ├── compressor.py  # 文件枚举、输出路径处理
 │   │   └── __init__.py
 │   ├── scheduler/         # 多编码器调度
@@ -167,23 +165,21 @@ scheduler:
   max_total_concurrent: 5  # 总并发 = 3 + 2
 ```
 
-### 编码/音频/字幕配置
+### 编码/音频配置
 
-`encoding` 除了视频输出编码与码率规则外，还支持可选的音频/字幕策略（详见 `config-example.yaml`）：
+`encoding` 除了视频输出编码与码率规则外，还支持简化的音频处理模式（详见 `config-example.yaml`）：
 
 ```yaml
 encoding:
   codec: hevc
-  audio_bitrate: "128k"   # 需要转码时的默认音频目标码率
+  audio_bitrate: "128k"   # 转码时的默认音频目标码率
   audio:
-    copy_policy: smart    # off/aac_only/smart/always
-    tracks:
-      keep: first         # first/all/language_prefer
-  subtitles:
-    keep: none            # none/mov_text/copy
+    mode: transcode       # off/copy/transcode/auto
+    codec: aac            # transcode 时的目标音频编码
+    bitrate: null         # null=沿用 audio_bitrate
 ```
 
-不配置 `audio`/`subtitles` 时，默认行为与旧版一致：仅保留第一音轨并转 AAC@`audio_bitrate`，字幕丢弃。
+默认行为：字幕丢弃（`-sn`）；音频目标为 AAC@`audio_bitrate`，但若探测到源音频码率 <= 目标码率，则优先 copy（copy 失败会回退转码）。
 
 ### 日志/控制台配置
 
@@ -240,14 +236,10 @@ SUPPORTED_HW_DECODE_CODECS = {
 - 设置 `logging.level: DEBUG` 或 `--verbose` 查看硬解决策日志
 - 使用 `--print-cmd` 查看实际执行的 FFmpeg 命令
 
-### streams.py
-- `probe_streams()`: 使用 `ffprobe` 探测音频/字幕 streams（JSON），返回流列表与探测是否成功
-- `AudioStreamInfo` / `SubtitleStreamInfo`: 音频/字幕流元数据 dataclass（codec、码率、语言、default/commentary 等）
-
-### media_plan.py
-- `build_stream_plan()`: 根据 `encoding.audio` / `encoding.subtitles` 生成显式 `-map` 与 per‑stream 编解码参数
-- 支持音频 copy 策略（off/aac_only/smart/always）、多音轨选择（first/all/language_prefer）、字幕保留（none/mov_text/copy）
-- 未启用高级策略时自动跳过 `ffprobe`，保持旧版性能与默认行为
+### 音频处理（简化）
+- 通过 `encoding.audio.mode` 控制：off/copy/transcode/auto（transcode: 源码率<=目标则优先 copy；auto: 总是先 copy，失败回退转码）
+- 不显式 `-map`，不做 `ffprobe` 音轨探测；默认只保留 ffmpeg 选中的第一条音频
+- 始终 `-sn` 丢弃字幕，避免 MP4 字幕兼容问题
 
 ### encoder_check.py
 - `detect_available_encoders()`: 检测所有启用的编码器，返回实际可用的配置
