@@ -192,7 +192,9 @@ def run_batch(config: Dict[str, Any]) -> int:
     if skipped_count > 0:
         logger.info(f"预检查: {skipped_count} 个文件已存在，跳过")
     if overwrite_count > 0:
-        logger.warning(f"预检查: {overwrite_count} 个输出已存在，将覆盖（skip_existing=false）")
+        logger.warning(
+            f"预检查: {overwrite_count} 个输出已存在，将覆盖（skip_existing=false）"
+        )
 
     total_tasks = len(files_to_process)
     logger.info(f"待处理: {total_tasks} 个文件")
@@ -541,12 +543,12 @@ def run_batch(config: Dict[str, Any]) -> int:
             new_size = os.path.getsize(new_filename)
             output_bitrate = get_bitrate(new_filename)
             output_duration = get_duration(new_filename)
-            output_codec = get_codec(new_filename)
+            output_video_codec = get_codec(new_filename)
 
             stats["new_size"] = new_size
             stats["output_bitrate"] = output_bitrate
             stats["output_duration"] = output_duration
-            stats["output_codec"] = output_codec
+            stats["output_codec"] = output_video_codec
             stats["status"] = RESULT_SUCCESS
             stats["method"] = cmd_info["name"]
 
@@ -574,7 +576,7 @@ def run_batch(config: Dict[str, Any]) -> int:
                 f"    输入: {format_size(file_size)} "
                 f"{source_codec.upper()} {original_bitrate/1000000:.2f}Mbps\n"
                 f"    输出: {format_size(new_size)} "
-                f"{output_codec.upper()} {output_bitrate/1000000:.2f}Mbps\n"
+                f"{output_video_codec.upper()} {output_bitrate/1000000:.2f}Mbps\n"
                 f"    压缩率: {compression_ratio:.1f}% | 时长: {output_duration/60:.1f}分钟\n"
                 f"    耗时: {encode_time/60:.1f}分钟 | 速度: "
                 f"{speed_ratio:.2f}x | 平均: {avg_fps:.1f}fps",

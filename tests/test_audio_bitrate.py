@@ -69,4 +69,3 @@ class TestGetAudioBitrate:
         )
 
         assert get_audio_bitrate("dummy.mp4") is None
-
