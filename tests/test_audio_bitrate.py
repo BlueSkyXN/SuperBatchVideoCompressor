@@ -34,7 +34,7 @@ class TestGetAudioBitrate:
     def test_returns_int_value(self, monkeypatch):
         captured = {}
 
-        def fake_check_output(cmd, stderr=None):
+        def fake_check_output(cmd, stderr=None, timeout=None):
             captured["cmd"] = cmd
             return b"128000\n"
 
@@ -49,7 +49,7 @@ class TestGetAudioBitrate:
         assert "a:0" in captured["cmd"]
 
     def test_returns_none_on_na(self, monkeypatch):
-        def fake_check_output(cmd, stderr=None):
+        def fake_check_output(cmd, stderr=None, timeout=None):
             return b"N/A\n"
 
         monkeypatch.setattr(
@@ -60,7 +60,7 @@ class TestGetAudioBitrate:
         assert get_audio_bitrate("dummy.mp4") is None
 
     def test_returns_none_on_error(self, monkeypatch):
-        def fake_check_output(cmd, stderr=None):
+        def fake_check_output(cmd, stderr=None, timeout=None):
             raise subprocess.CalledProcessError(1, cmd)
 
         monkeypatch.setattr(
