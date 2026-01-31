@@ -39,15 +39,38 @@ def resolve_output_paths(
 
     Returns:
         (最终输出文件路径, 临时文件路径)
+    
+    Raises:
+        ValueError: 如果文件路径不在输入文件夹内或输出路径越界
     """
-    source_path = Path(filepath)
+    # 解析为绝对路径并验证（防止路径遍历攻击）
+    abs_filepath = Path(filepath).resolve()
+    abs_input = Path(input_folder).resolve()
+    abs_output = Path(output_folder).resolve()
+
+    # 验证文件确实在 input_folder 内
+    try:
+        abs_filepath.relative_to(abs_input)
+    except ValueError:
+        raise ValueError(
+            f"安全错误：文件 {filepath} 不在输入文件夹 {input_folder} 内"
+        )
 
     if keep_structure:
-        relative_path = Path(os.path.relpath(filepath, input_folder))
-        output_path = (Path(output_folder) / relative_path).with_suffix(".mp4")
+        relative_path = abs_filepath.relative_to(abs_input)
+        output_path = (abs_output / relative_path).with_suffix(".mp4")
     else:
-        base_name = f"{source_path.stem}.mp4"
-        output_path = Path(output_folder) / base_name
+        base_name = f"{abs_filepath.stem}.mp4"
+        output_path = abs_output / base_name
+
+    # 解析输出路径并进行最终验证（防止符号链接或其他方式越界）
+    output_path = output_path.resolve()
+    try:
+        output_path.relative_to(abs_output)
+    except ValueError:
+        raise ValueError(
+            f"安全错误：计算的输出路径 {output_path} 超出了输出文件夹 {abs_output}"
+        )
 
     # 统一使用 POSIX 风格路径，避免 Windows 下反斜杠导致路径对比或日志不一致
     new_filename = output_path.as_posix()

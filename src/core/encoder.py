@@ -67,12 +67,13 @@ def parse_bitrate_to_bps(value: Any) -> Optional[int]:
         return None
 
 
-def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
+def execute_ffmpeg(cmd: list, duration: float = 0.0) -> Tuple[bool, str]:
     """
     执行 FFmpeg 命令并检查错误
 
     Args:
         cmd: FFmpeg 命令列表
+        duration: 视频时长（秒），用于计算超时
 
     Returns:
         (成功标志, 错误信息)
@@ -90,6 +91,15 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
     cmd_str = " ".join(f'"{arg}"' if " " in str(arg) else str(arg) for arg in cmd)
     logging.debug(f"FFmpeg 命令: {cmd_str}")
 
+    # 根据视频时长计算合理超时（假设编码速度至少 0.1x）
+    # 即10分钟视频最多编码100分钟
+    min_timeout = 300  # 最少5分钟
+    max_timeout = 7200  # 最多2小时
+    if duration > 0:
+        timeout = max(min_timeout, min(duration * 10, max_timeout))
+    else:
+        timeout = 3600  # 默认1小时
+
     try:
         process = subprocess.Popen(
             cmd,
@@ -101,7 +111,12 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
         )
         register_process(process)
         try:
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            unregister_process(process)
+            return False, f"编码超时（{timeout:.0f}秒），可能文件过大或系统过载"
         finally:
             unregister_process(process)
 
@@ -120,8 +135,10 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
             for error_pattern in known_errors:
                 if error_pattern in stderr:
                     return False, error_pattern
-            # 其他未知错误
-            return False, stderr[-500:] if len(stderr) > 500 else stderr
+            # 其他未知错误，返回摘要而非完整错误（防止信息泄露）
+            if len(stderr) > 500:
+                return False, "编码失败，请查看详细日志"
+            return False, stderr
 
         return True, None
     except Exception as e:
