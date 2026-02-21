@@ -10,6 +10,7 @@ SBVC 是一个基于 FFmpeg 的批量视频压缩命令行工具，支持 NVENC 
   - 同编码器内：硬解+硬编 → 软解+硬编(限帧) → 软解+硬编
   - 跨编码器：NVENC 失败 → QSV，QSV 失败 → NVENC
   - 最终兜底：CPU 软编码（可开关）
+  - 解码损坏容错：识别源流损坏错误并自动注入忽错参数重试（可配置）
   - 所有方法失败的任务跳过，继续处理队列
 - **进程管理**：Ctrl+C 自动终止所有 FFmpeg 进程，启动时清理临时文件
 - 自动按分辨率计算目标码率
@@ -64,6 +65,8 @@ python main.py --dry-run
 - **帧率限制**：`fps` - 最大帧率、软解/软编时是否限帧
 
 - **文件处理**：`files` - 最小文件大小、目录结构保持、跳过已存在文件
+
+- **解码容错**：`error_recovery` - 遇到源流损坏/解码失败时是否自动重试，以及每种编码方法的最大忽错重试次数
 
 - **日志配置**：`logging` - 日志级别、输出格式、进度显示
 
@@ -341,6 +344,18 @@ ffmpeg -i input.mkv -c:v hevc output.mp4
 2. 检查是否使用了 `--force-bitrate` 命令行参数（会覆盖配置）
 3. 检查配置文件的 `bitrate.forced` 是否为 0
 4. 启用 DEBUG 日志查看码率计算过程
+
+### 问题5：源文件存在损坏帧，希望尽量转出可播放文件
+
+当 FFmpeg 报错包含 `Invalid data found when processing input` 等解码损坏关键词时，SBVC 可自动在输入前注入忽错参数并重试。
+
+配置示例：
+
+```yaml
+error_recovery:
+  retry_decode_errors_with_ignore: true
+  max_ignore_retries_per_method: 1
+```
 
 ## 详细文档
 

@@ -16,6 +16,8 @@ from src.core.encoder import (
     build_sw_encode_command,
     SUPPORTED_HW_DECODE_CODECS,
     execute_ffmpeg,
+    is_decode_corruption_error,
+    add_ignore_decode_errors_flags,
 )
 from src.config.defaults import HW_ENCODERS, SW_ENCODERS
 
@@ -267,3 +269,21 @@ class TestExecuteFFmpeg:
         assert "超时" in error
         assert "15" in error
         assert process.killed is True
+
+
+class TestDecodeErrorRecoveryHelpers:
+    """解码错误容错辅助函数测试"""
+
+    def test_detect_decode_corruption_error(self):
+        assert (
+            is_decode_corruption_error("Invalid data found when processing input")
+            is True
+        )
+        assert is_decode_corruption_error("Unknown encoder") is False
+
+    def test_add_ignore_flags_before_input(self):
+        cmd = ["ffmpeg", "-y", "-i", "in.mp4", "-c:v", "hevc_nvenc", "out.mp4"]
+        updated = add_ignore_decode_errors_flags(cmd)
+        i_idx = updated.index("-i")
+        assert "-fflags" in updated[:i_idx]
+        assert "+discardcorrupt" in updated[:i_idx]
