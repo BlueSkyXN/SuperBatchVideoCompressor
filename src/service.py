@@ -396,6 +396,10 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             if original_bitrate <= 0:
                 original_bitrate = get_bitrate(filepath)
+            if width <= 0 or height <= 0:
+                from src.core.video import get_resolution
+
+                width, height = get_resolution(filepath)
             if source_codec == "unknown":
                 source_codec = get_codec(filepath)
             if duration <= 0:
