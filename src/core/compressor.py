@@ -43,10 +43,18 @@ def resolve_output_paths(
     Raises:
         ValueError: 如果文件路径不在输入文件夹内或输出路径越界
     """
-    # 解析为绝对路径并验证（防止路径遍历攻击）
-    abs_filepath = Path(filepath).resolve()
-    abs_input = Path(input_folder).resolve()
-    abs_output = Path(output_folder).resolve()
+    # 对于 Windows 下的 "/input" 这类 POSIX 风格绝对路径，避免 resolve() 注入盘符
+    use_lexical_paths = all(str(p).startswith("/") for p in (filepath, input_folder, output_folder))
+
+    # 解析为规范路径并验证（防止路径遍历攻击）
+    if use_lexical_paths:
+        abs_filepath = Path(os.path.normpath(filepath))
+        abs_input = Path(os.path.normpath(input_folder))
+        abs_output = Path(os.path.normpath(output_folder))
+    else:
+        abs_filepath = Path(filepath).resolve()
+        abs_input = Path(input_folder).resolve()
+        abs_output = Path(output_folder).resolve()
 
     # 验证文件确实在 input_folder 内
     try:
@@ -64,7 +72,11 @@ def resolve_output_paths(
         output_path = abs_output / base_name
 
     # 解析输出路径并进行最终验证（防止符号链接或其他方式越界）
-    output_path = output_path.resolve()
+    output_path = (
+        Path(os.path.normpath(str(output_path)))
+        if use_lexical_paths
+        else output_path.resolve()
+    )
     try:
         output_path.relative_to(abs_output)
     except ValueError:

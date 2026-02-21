@@ -9,6 +9,8 @@ from src.core.video import (
 )
 from src.core.encoder import (
     execute_ffmpeg,
+    is_decode_corruption_error,
+    add_ignore_decode_errors_flags,
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
@@ -25,6 +27,8 @@ __all__ = [
     "get_video_metadata_batch",
     "calculate_target_bitrate",
     "execute_ffmpeg",
+    "is_decode_corruption_error",
+    "add_ignore_decode_errors_flags",
     "build_hw_encode_command",
     "build_sw_encode_command",
     "SUPPORTED_HW_DECODE_CODECS",
