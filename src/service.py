@@ -386,12 +386,20 @@ def run_batch(config: Dict[str, Any]) -> int:
                 return TaskResult(success=True, filepath=filepath, stats=stats)
 
             # 获取源文件信息
-            metadata = get_video_metadata_batch(filepath)
-            original_bitrate = metadata["bitrate"]
-            width, height = metadata["width"], metadata["height"]
-            source_codec = metadata["codec"]
-            duration = metadata["duration"]
-            fps = metadata["fps"]
+            metadata = get_video_metadata_batch(filepath) or {}
+            original_bitrate = int(metadata.get("bitrate") or 0)
+            width = int(metadata.get("width") or 0)
+            height = int(metadata.get("height") or 0)
+            source_codec = str(metadata.get("codec") or "unknown")
+            duration = float(metadata.get("duration") or 0.0)
+            fps = float(metadata.get("fps") or 0.0)
+
+            if original_bitrate <= 0:
+                original_bitrate = get_bitrate(filepath)
+            if source_codec == "unknown":
+                source_codec = get_codec(filepath)
+            if duration <= 0:
+                duration = get_duration(filepath)
 
             stats["original_bitrate"] = original_bitrate
             stats["duration"] = duration
@@ -510,7 +518,9 @@ def run_batch(config: Dict[str, Any]) -> int:
             start_time = time.time()
 
             # 执行编码
-            ffmpeg_timeout = max(300, min(int(duration * 10), 7200))
+            # 动态超时：按视频时长放大 10 倍，覆盖编码/IO波动，并限制在 5 分钟到 2 小时之间。
+            timeout_duration = duration if duration > 0 else 30
+            ffmpeg_timeout = max(300, min(int(timeout_duration * 10), 7200))
             success, error = execute_ffmpeg(cmd_info["cmd"], timeout=ffmpeg_timeout)
 
             # audio.mode=auto 或 transcode+按码率改用copy：优先 copy，失败则回退转码重试一次

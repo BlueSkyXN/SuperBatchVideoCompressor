@@ -232,9 +232,23 @@ class TestHardwareDecodeWhitelist:
 class TestExecuteFFmpeg:
     """FFmpeg 执行测试"""
 
+    def test_success_returns_true(self, monkeypatch):
+        class DummyProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: DummyProcess())
+
+        success, error = execute_ffmpeg(["ffmpeg", "-version"], timeout=15)
+        assert success is True
+        assert error is None
+
     def test_timeout_returns_readable_error(self, monkeypatch):
         class DummyProcess:
             returncode = 1
+            killed = False
 
             def communicate(self, timeout=None):
                 if timeout is not None:
@@ -242,10 +256,14 @@ class TestExecuteFFmpeg:
                 return "", ""
 
             def kill(self):
-                return None
+                self.killed = True
 
-        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: DummyProcess())
+        process = DummyProcess()
+
+        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: process)
 
         success, error = execute_ffmpeg(["ffmpeg", "-version"], timeout=15)
         assert success is False
         assert "超时" in error
+        assert "15" in error
+        assert process.killed is True

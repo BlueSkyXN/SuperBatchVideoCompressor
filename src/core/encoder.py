@@ -158,8 +158,7 @@ def execute_ffmpeg(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate()
-                timeout_text = timeout if timeout is not None else "未知"
-                return False, f"FFmpeg 执行超时（{timeout_text}秒）"
+                return False, f"FFmpeg 执行超时（{timeout}秒）"
         finally:
             unregister_process(process)
 
@@ -186,7 +185,8 @@ def execute_ffmpeg(
             return False, stderr[-500:] if len(stderr) > 500 else stderr
 
         return True, None
-    except (subprocess.SubprocessError, OSError, ValueError) as e:
+    # 仅处理 FFmpeg 启动/执行相关异常，避免吞掉业务逻辑异常。
+    except (subprocess.SubprocessError, OSError) as e:
         return False, str(e)
 
 
