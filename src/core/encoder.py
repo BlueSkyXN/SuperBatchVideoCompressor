@@ -19,6 +19,17 @@ from src.config.defaults import (
 )
 
 
+# 常见“源流损坏/解码失败”错误关键词（大小写不敏感）
+DECODE_CORRUPTION_ERROR_PATTERNS = [
+    "decoding error: invalid data found when processing input",
+    "invalid data found when processing input",
+    "error splitting the input into nal units",
+    "missing picture in access unit",
+    "error submitting packet to decoder",
+    "corrupt",
+]
+
+
 def parse_bitrate_to_bps(value: Any) -> Optional[int]:
     """
     将 FFmpeg 风格的码率值解析为 bps（bit/s）。
@@ -67,13 +78,52 @@ def parse_bitrate_to_bps(value: Any) -> Optional[int]:
         return None
 
 
-def execute_ffmpeg(cmd: list, duration: float = 0.0) -> Tuple[bool, str]:
+def is_decode_corruption_error(error_text: Optional[str]) -> bool:
+    """判断错误文本是否属于“源流损坏/解码失败”类型。"""
+    if not error_text:
+        return False
+
+    lowered = str(error_text).lower()
+    return any(pattern in lowered for pattern in DECODE_CORRUPTION_ERROR_PATTERNS)
+
+
+def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
+    """
+    在 FFmpeg 命令中注入“尽量忽略坏包继续转码”的输入参数。
+
+    注入规则：在第一个 `-i` 之前追加：
+    - `-fflags +discardcorrupt`
+    - `-err_detect ignore_err`
+    """
+    if not cmd:
+        return cmd
+
+    new_cmd = list(cmd)
+    if "-i" not in new_cmd:
+        return new_cmd
+
+    input_index = new_cmd.index("-i")
+    pre_input = new_cmd[:input_index]
+    post_input = new_cmd[input_index:]
+
+    extra_flags = []
+    if "-fflags" not in pre_input:
+        extra_flags.extend(["-fflags", "+discardcorrupt"])
+    if "-err_detect" not in pre_input:
+        extra_flags.extend(["-err_detect", "ignore_err"])
+
+    if not extra_flags:
+        return new_cmd
+
+    return pre_input + extra_flags + post_input
+
+
+def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
     """
     执行 FFmpeg 命令并检查错误
 
     Args:
         cmd: FFmpeg 命令列表
-        duration: 视频时长（秒），用于计算超时
 
     Returns:
         (成功标志, 错误信息)
@@ -91,15 +141,6 @@ def execute_ffmpeg(cmd: list, duration: float = 0.0) -> Tuple[bool, str]:
     cmd_str = " ".join(f'"{arg}"' if " " in str(arg) else str(arg) for arg in cmd)
     logging.debug(f"FFmpeg 命令: {cmd_str}")
 
-    # 根据视频时长计算合理超时（假设编码速度至少 0.1x）
-    # 即10分钟视频最多编码100分钟
-    min_timeout = 300  # 最少5分钟
-    max_timeout = 7200  # 最多2小时
-    if duration > 0:
-        timeout = max(min_timeout, min(duration * 10, max_timeout))
-    else:
-        timeout = 3600  # 默认1小时
-
     try:
         process = subprocess.Popen(
             cmd,
@@ -111,12 +152,7 @@ def execute_ffmpeg(cmd: list, duration: float = 0.0) -> Tuple[bool, str]:
         )
         register_process(process)
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            unregister_process(process)
-            return False, f"编码超时（{timeout:.0f}秒），可能文件过大或系统过载"
+            stdout, stderr = process.communicate()
         finally:
             unregister_process(process)
 
@@ -135,10 +171,12 @@ def execute_ffmpeg(cmd: list, duration: float = 0.0) -> Tuple[bool, str]:
             for error_pattern in known_errors:
                 if error_pattern in stderr:
                     return False, error_pattern
-            # 其他未知错误，返回摘要而非完整错误（防止信息泄露）
-            if len(stderr) > 500:
-                return False, "编码失败，请查看详细日志"
-            return False, stderr
+
+            if is_decode_corruption_error(stderr):
+                return False, "Decoding error: Invalid data found when processing input"
+
+            # 其他未知错误
+            return False, stderr[-500:] if len(stderr) > 500 else stderr
 
         return True, None
     except Exception as e:
@@ -151,7 +189,7 @@ def calculate_target_bitrate(
     height: int,
     force_bitrate: bool = False,
     forced_value: int = 0,
-    max_bitrate_by_resolution: dict = None,
+    max_bitrate_by_resolution: Optional[dict] = None,
 ) -> int:
     """
     计算目标码率
@@ -275,7 +313,7 @@ def build_hw_encode_command(
     map_args: Optional[List[str]] = None,
     audio_args: Optional[List[str]] = None,
     subtitle_args: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
     构建硬件编码命令
 
