@@ -18,7 +18,6 @@ from src.config.defaults import (
     BITRATE_RATIO,
 )
 
-
 # 常见“源流损坏/解码失败”错误关键词（大小写不敏感）
 DECODE_CORRUPTION_ERROR_PATTERNS = [
     "decoding error: invalid data found when processing input",
@@ -118,7 +117,9 @@ def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     return pre_input + extra_flags + post_input
 
 
-def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
+def execute_ffmpeg(
+    cmd: list, timeout: Optional[int] = None
+) -> Tuple[bool, Optional[str]]:
     """
     执行 FFmpeg 命令并检查错误
 
@@ -152,7 +153,13 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
         )
         register_process(process)
         try:
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                timeout_text = timeout if timeout is not None else "未知"
+                return False, f"FFmpeg 执行超时（{timeout_text}秒）"
         finally:
             unregister_process(process)
 
@@ -179,7 +186,7 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
             return False, stderr[-500:] if len(stderr) > 500 else stderr
 
         return True, None
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
         return False, str(e)
 
 

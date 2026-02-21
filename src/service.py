@@ -15,8 +15,8 @@ from src.core import (
     get_video_files,
     resolve_output_paths,
     get_bitrate,
-    get_resolution,
     get_codec,
+    get_video_metadata_batch,
     execute_ffmpeg,
     calculate_target_bitrate,
     build_hw_encode_command,
@@ -39,6 +39,11 @@ from src.scheduler.advanced import (
 logger = logging.getLogger(__name__)
 
 
+def sanitize_for_log(value: Any) -> str:
+    """移除换行/制表符，避免日志注入。"""
+    return str(value).replace("\r", " ").replace("\n", " ").replace("\t", " ")
+
+
 def run_batch(config: Dict[str, Any]) -> int:
     """
     执行批量压缩任务，行为与原 CLI run 保持一致。
@@ -49,7 +54,6 @@ def run_batch(config: Dict[str, Any]) -> int:
     Returns:
         进程退出码：0 成功，非 0 表示存在失败任务
     """
-    import shutil
     import threading
 
     input_folder = config["paths"]["input"]
@@ -98,8 +102,8 @@ def run_batch(config: Dict[str, Any]) -> int:
     logger.info("=" * 60)
 
     # 显示路径配置
-    logger.info(f"输入目录: {input_folder}")
-    logger.info(f"输出目录: {output_folder}")
+    logger.info(f"输入目录: {sanitize_for_log(input_folder)}")
+    logger.info(f"输出目录: {sanitize_for_log(output_folder)}")
     logger.info(f"保持目录结构: {'是' if keep_structure else '否'}")
     logger.info(f"输出编码: {output_codec}")
     logger.info("-" * 60)
@@ -123,8 +127,16 @@ def run_batch(config: Dict[str, Any]) -> int:
     logger.info("-" * 60)
 
     if not os.path.exists(input_folder):
-        logger.error(f"输入目录不存在: {input_folder}")
+        logger.error(f"输入目录不存在: {sanitize_for_log(input_folder)}")
         return 1
+    if not os.path.isdir(input_folder):
+        logger.error(f"输入路径不是目录: {sanitize_for_log(input_folder)}")
+        return 1
+    if not os.access(input_folder, os.R_OK | os.X_OK):
+        logger.error(f"输入目录无读取权限: {sanitize_for_log(input_folder)}")
+        return 1
+    if os.path.islink(input_folder):
+        logger.warning(f"输入目录是符号链接: {sanitize_for_log(input_folder)}")
 
     # 预扫描任务列表
     video_files = get_video_files(input_folder)
@@ -176,7 +188,7 @@ def run_batch(config: Dict[str, Any]) -> int:
             logger.info(f"  ... 还有 {total_files - 10} 个文件")
         return 0
 
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(output_folder, mode=0o755, exist_ok=True)
 
     results = []
     files_to_process = []
@@ -340,7 +352,7 @@ def run_batch(config: Dict[str, Any]) -> int:
         """编码单个文件"""
         import time
         from src.core.encoder import parse_bitrate_to_bps
-        from src.core.video import get_duration, get_fps, get_audio_bitrate
+        from src.core.video import get_duration, get_audio_bitrate
 
         task_label = (
             f"{task_id}/{total_tasks_count}" if total_tasks_count > 0 else str(task_id)
@@ -374,11 +386,12 @@ def run_batch(config: Dict[str, Any]) -> int:
                 return TaskResult(success=True, filepath=filepath, stats=stats)
 
             # 获取源文件信息
-            original_bitrate = get_bitrate(filepath)
-            width, height = get_resolution(filepath)
-            source_codec = get_codec(filepath)
-            duration = get_duration(filepath)
-            fps = get_fps(filepath)
+            metadata = get_video_metadata_batch(filepath)
+            original_bitrate = metadata["bitrate"]
+            width, height = metadata["width"], metadata["height"]
+            source_codec = metadata["codec"]
+            duration = metadata["duration"]
+            fps = metadata["fps"]
 
             stats["original_bitrate"] = original_bitrate
             stats["duration"] = duration
@@ -400,7 +413,7 @@ def run_batch(config: Dict[str, Any]) -> int:
             new_filename, temp_filename = resolve_output_paths(
                 filepath, input_folder, output_folder, keep_structure
             )
-            os.makedirs(os.path.dirname(new_filename), exist_ok=True)
+            os.makedirs(os.path.dirname(new_filename), mode=0o755, exist_ok=True)
 
             if os.path.exists(new_filename) and skip_existing:
                 logger.info(f"[跳过] 输出文件已存在: {new_filename}", extra=extra_ctx)
@@ -497,7 +510,8 @@ def run_batch(config: Dict[str, Any]) -> int:
             start_time = time.time()
 
             # 执行编码
-            success, error = execute_ffmpeg(cmd_info["cmd"])
+            ffmpeg_timeout = max(300, min(int(duration * 10), 7200))
+            success, error = execute_ffmpeg(cmd_info["cmd"], timeout=ffmpeg_timeout)
 
             # audio.mode=auto 或 transcode+按码率改用copy：优先 copy，失败则回退转码重试一次
             if not success and audio_copy_fallback and retry_audio_args is not None:
@@ -522,7 +536,9 @@ def run_batch(config: Dict[str, Any]) -> int:
                         extra=extra_ctx,
                     )
                     cmd_info = retry_cmd_info
-                    success, error = execute_ffmpeg(cmd_info["cmd"])
+                    success, error = execute_ffmpeg(
+                        cmd_info["cmd"], timeout=ffmpeg_timeout
+                    )
                     if success:
                         logger.debug(
                             f"[任务 {task_label}] 音频回退转码重试成功",
@@ -546,7 +562,9 @@ def run_batch(config: Dict[str, Any]) -> int:
                             f"{attempt}/{max_ignore_retries_per_method}",
                             extra=extra_ctx,
                         )
-                        success, error = execute_ffmpeg(tolerant_cmd)
+                        success, error = execute_ffmpeg(
+                            tolerant_cmd, timeout=ffmpeg_timeout
+                        )
                         if success:
                             logger.warning(
                                 f"[任务 {task_label}] 忽错容错重试成功",
@@ -588,9 +606,11 @@ def run_batch(config: Dict[str, Any]) -> int:
 
             # 移动文件
             try:
-                if not skip_existing and os.path.exists(new_filename):
-                    os.remove(new_filename)
-                shutil.move(temp_filename, new_filename)
+                if skip_existing and os.path.exists(new_filename):
+                    os.remove(temp_filename)
+                    stats["status"] = RESULT_SKIP_EXISTS
+                    return TaskResult(success=True, filepath=filepath, stats=stats)
+                os.replace(temp_filename, new_filename)
             except Exception as e:
                 return TaskResult(
                     success=False, filepath=filepath, error=str(e), stats=stats
@@ -644,7 +664,7 @@ def run_batch(config: Dict[str, Any]) -> int:
 
         except Exception as e:
             logger.error(
-                f"[任务 {task_label}] [异常] 处理 {filepath} 时发生错误: {e}",
+                f"[任务 {task_label}] [异常] 处理 {sanitize_for_log(filepath)} 时发生错误: {e}",
                 extra=extra_ctx,
             )
             return TaskResult(
