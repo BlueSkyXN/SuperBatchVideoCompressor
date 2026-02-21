@@ -58,6 +58,12 @@ DEFAULT_HW_ACCEL = "auto"
 DEFAULT_OUTPUT_CODEC = "hevc"
 
 # ============================================================
+# 解码错误容错配置
+# ============================================================
+RETRY_DECODE_ERRORS_WITH_IGNORE = True
+MAX_IGNORE_RETRIES_PER_METHOD = 1
+
+# ============================================================
 # 硬件编码器映射表
 # ============================================================
 HW_ENCODERS = {
@@ -169,6 +175,12 @@ DEFAULT_CONFIG = {
         "max": MAX_FPS,
         "limit_on_software_decode": LIMIT_FPS_ON_SOFTWARE_DECODE,
         "limit_on_software_encode": LIMIT_FPS_ON_SOFTWARE_ENCODE,
+    },
+    "error_recovery": {
+        # 检测到源流损坏/解码错误时，追加 -fflags +discardcorrupt -err_detect ignore_err
+        # 并在“当前编码方法”内重试。
+        "retry_decode_errors_with_ignore": RETRY_DECODE_ERRORS_WITH_IGNORE,
+        "max_ignore_retries_per_method": MAX_IGNORE_RETRIES_PER_METHOD,
     },
     "encoders": {
         "nvenc": {

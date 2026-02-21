@@ -19,6 +19,17 @@ from src.config.defaults import (
 )
 
 
+# 常见“源流损坏/解码失败”错误关键词（大小写不敏感）
+DECODE_CORRUPTION_ERROR_PATTERNS = [
+    "decoding error: invalid data found when processing input",
+    "invalid data found when processing input",
+    "error splitting the input into nal units",
+    "missing picture in access unit",
+    "error submitting packet to decoder",
+    "corrupt",
+]
+
+
 def parse_bitrate_to_bps(value: Any) -> Optional[int]:
     """
     将 FFmpeg 风格的码率值解析为 bps（bit/s）。
@@ -67,7 +78,47 @@ def parse_bitrate_to_bps(value: Any) -> Optional[int]:
         return None
 
 
-def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
+def is_decode_corruption_error(error_text: Optional[str]) -> bool:
+    """判断错误文本是否属于“源流损坏/解码失败”类型。"""
+    if not error_text:
+        return False
+
+    lowered = str(error_text).lower()
+    return any(pattern in lowered for pattern in DECODE_CORRUPTION_ERROR_PATTERNS)
+
+
+def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
+    """
+    在 FFmpeg 命令中注入“尽量忽略坏包继续转码”的输入参数。
+
+    注入规则：在第一个 `-i` 之前追加：
+    - `-fflags +discardcorrupt`
+    - `-err_detect ignore_err`
+    """
+    if not cmd:
+        return cmd
+
+    new_cmd = list(cmd)
+    if "-i" not in new_cmd:
+        return new_cmd
+
+    input_index = new_cmd.index("-i")
+    pre_input = new_cmd[:input_index]
+    post_input = new_cmd[input_index:]
+
+    extra_flags = []
+    if "-fflags" not in pre_input:
+        extra_flags.extend(["-fflags", "+discardcorrupt"])
+    if "-err_detect" not in pre_input:
+        extra_flags.extend(["-err_detect", "ignore_err"])
+
+    if not extra_flags:
+        return new_cmd
+
+    return pre_input + extra_flags + post_input
+
+
+def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
     """
     执行 FFmpeg 命令并检查错误
 
@@ -120,6 +171,10 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, str]:
             for error_pattern in known_errors:
                 if error_pattern in stderr:
                     return False, error_pattern
+
+            if is_decode_corruption_error(stderr):
+                return False, "Decoding error: Invalid data found when processing input"
+
             # 其他未知错误
             return False, stderr[-500:] if len(stderr) > 500 else stderr
 
@@ -134,7 +189,7 @@ def calculate_target_bitrate(
     height: int,
     force_bitrate: bool = False,
     forced_value: int = 0,
-    max_bitrate_by_resolution: dict = None,
+    max_bitrate_by_resolution: Optional[dict] = None,
 ) -> int:
     """
     计算目标码率
@@ -258,7 +313,7 @@ def build_hw_encode_command(
     map_args: Optional[List[str]] = None,
     audio_args: Optional[List[str]] = None,
     subtitle_args: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
     构建硬件编码命令
 

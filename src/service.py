@@ -21,6 +21,8 @@ from src.core import (
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
+    is_decode_corruption_error,
+    add_ignore_decode_errors_flags,
 )
 from src.config.defaults import (
     RESULT_SUCCESS,
@@ -63,6 +65,19 @@ def run_batch(config: Dict[str, Any]) -> int:
     limit_fps_software_decode = config["fps"]["limit_on_software_decode"]
     limit_fps_software_encode = config["fps"]["limit_on_software_encode"]
     max_bitrate_by_resolution = config["encoding"]["bitrate"].get("max_by_resolution")
+    error_recovery_cfg = config.get("error_recovery", {})
+    retry_decode_errors_with_ignore = error_recovery_cfg.get(
+        "retry_decode_errors_with_ignore", True
+    )
+    max_ignore_retries_per_method = error_recovery_cfg.get(
+        "max_ignore_retries_per_method", 1
+    )
+    try:
+        max_ignore_retries_per_method = int(max_ignore_retries_per_method)
+    except (TypeError, ValueError):
+        max_ignore_retries_per_method = 1
+    max_ignore_retries_per_method = max(0, max_ignore_retries_per_method)
+
     cpu_preset = config.get("encoders", {}).get("cpu", {}).get("preset", "medium")
     dry_run = config.get("dry_run", False)
     logging_cfg = config.get("logging", {})
@@ -95,6 +110,13 @@ def run_batch(config: Dict[str, Any]) -> int:
     if hw_encoders:
         logger.info(f"硬件编码器: {hw_encoders}")
     logger.info(f"CPU 兜底: {'启用' if stats['cpu_fallback'] else '禁用'}")
+    if retry_decode_errors_with_ignore and max_ignore_retries_per_method > 0:
+        logger.info(
+            "解码错误容错: 启用 "
+            f"(每种编码方法最多重试 {max_ignore_retries_per_method} 次)"
+        )
+    else:
+        logger.info("解码错误容错: 禁用")
     for enc_name, enc_stats in stats["encoder_slots"].items():
         logger.info(f"  - {enc_name}: 最大并发 {enc_stats['max']}")
     logger.info("回退策略: 硬解+硬编 → 软解+硬编 → 其他编码器 → CPU")
@@ -499,13 +521,48 @@ def run_batch(config: Dict[str, Any]) -> int:
                         f"[任务 {task_label}] 音频 copy 失败，回退转码重试一次",
                         extra=extra_ctx,
                     )
-                    success, error = execute_ffmpeg(retry_cmd_info["cmd"])
+                    cmd_info = retry_cmd_info
+                    success, error = execute_ffmpeg(cmd_info["cmd"])
                     if success:
                         logger.debug(
                             f"[任务 {task_label}] 音频回退转码重试成功",
                             extra=extra_ctx,
                         )
-                        cmd_info = retry_cmd_info
+
+            # 检测到源流损坏/解码错误时，注入忽错参数重试（同编码方法内）
+            if (
+                not success
+                and retry_decode_errors_with_ignore
+                and max_ignore_retries_per_method > 0
+                and is_decode_corruption_error(error)
+            ):
+                tolerant_cmd = add_ignore_decode_errors_flags(cmd_info["cmd"])
+
+                if tolerant_cmd != cmd_info["cmd"]:
+                    for attempt in range(1, max_ignore_retries_per_method + 1):
+                        logger.warning(
+                            f"[任务 {task_label}] 检测到疑似源流损坏，"
+                            "启用忽错容错重试 "
+                            f"{attempt}/{max_ignore_retries_per_method}",
+                            extra=extra_ctx,
+                        )
+                        success, error = execute_ffmpeg(tolerant_cmd)
+                        if success:
+                            logger.warning(
+                                f"[任务 {task_label}] 忽错容错重试成功",
+                                extra=extra_ctx,
+                            )
+                            cmd_info = {
+                                **cmd_info,
+                                "cmd": tolerant_cmd,
+                                "name": f"{cmd_info['name']} + 忽错容错",
+                            }
+                            break
+                else:
+                    logger.debug(
+                        f"[任务 {task_label}] 当前命令已包含忽错参数，跳过重复注入",
+                        extra=extra_ctx,
+                    )
 
             # 计算耗时
             encode_time = time.time() - start_time
