@@ -14,10 +14,10 @@ from src.core.encoder import (
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
-    SUPPORTED_HW_DECODE_CODECS,
-    execute_ffmpeg,
     is_decode_corruption_error,
     add_ignore_decode_errors_flags,
+    SUPPORTED_HW_DECODE_CODECS,
+    execute_ffmpeg,
 )
 from src.config.defaults import HW_ENCODERS, SW_ENCODERS
 
@@ -271,36 +271,43 @@ class TestExecuteFFmpeg:
         assert process.killed is True
 
 
+
 class TestDecodeErrorRecoveryHelpers:
     """解码错误容错辅助函数测试"""
 
     def test_detect_decode_corruption_error(self):
-        assert (
-            is_decode_corruption_error("Invalid data found when processing input")
-            is True
-        )
-        assert is_decode_corruption_error("Unknown encoder") is False
+        error = "Decoding error: Invalid data found when processing input"
+        assert is_decode_corruption_error(error) is True
+
+    def test_detect_non_decode_error(self):
+        error = "Unknown encoder 'hevc_xxx'"
+        assert is_decode_corruption_error(error) is False
 
     def test_add_ignore_flags_before_input(self):
-        cmd = ["ffmpeg", "-y", "-i", "in.mp4", "-c:v", "hevc_nvenc", "out.mp4"]
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-i", "input.mp4", "-c:v", "hevc_nvenc", "out.mp4"]
         updated = add_ignore_decode_errors_flags(cmd)
-        i_idx = updated.index("-i")
-        assert "-fflags" in updated[:i_idx]
-        assert "+discardcorrupt" in updated[:i_idx]
+
+        i_index = updated.index("-i")
+        assert "-fflags" in updated[:i_index]
+        assert "+discardcorrupt" in updated[:i_index]
+        assert "-err_detect" in updated[:i_index]
+        assert "ignore_err" in updated[:i_index]
 
     def test_add_ignore_flags_no_duplicate(self):
         cmd = [
             "ffmpeg",
             "-y",
+            "-hide_banner",
             "-fflags",
             "+discardcorrupt",
             "-err_detect",
             "ignore_err",
             "-i",
-            "in.mp4",
+            "input.mp4",
             "-c:v",
             "hevc_nvenc",
             "out.mp4",
         ]
+
         updated = add_ignore_decode_errors_flags(cmd)
         assert updated == cmd

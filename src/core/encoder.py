@@ -18,7 +18,7 @@ from src.config.defaults import (
     BITRATE_RATIO,
 )
 
-# 常见“源流损坏/解码失败”错误关键词（大小写不敏感）
+# 常见"源流损坏/解码失败"错误关键词（大小写不敏感）
 DECODE_CORRUPTION_ERROR_PATTERNS = [
     "decoding error: invalid data found when processing input",
     "invalid data found when processing input",
@@ -78,7 +78,7 @@ def parse_bitrate_to_bps(value: Any) -> Optional[int]:
 
 
 def is_decode_corruption_error(error_text: Optional[str]) -> bool:
-    """判断错误文本是否属于“源流损坏/解码失败”类型。"""
+    """判断错误文本是否属于"源流损坏/解码失败"类型。"""
     if not error_text:
         return False
 
@@ -88,7 +88,7 @@ def is_decode_corruption_error(error_text: Optional[str]) -> bool:
 
 def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     """
-    在 FFmpeg 命令中注入“尽量忽略坏包继续转码”的输入参数。
+    在 FFmpeg 命令中注入"尽量忽略坏包继续转码"的输入参数。
 
     注入规则：在第一个 `-i` 之前追加：
     - `-fflags +discardcorrupt`

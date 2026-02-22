@@ -64,6 +64,9 @@ python main.py --dry-run
 
 - **帧率限制**：`fps` - 最大帧率、软解/软编时是否限帧
 
+- **解码错误容错**：`error_recovery` - 当源文件局部损坏时，自动启用
+  `-fflags +discardcorrupt -err_detect ignore_err` 做同方法重试
+
 - **文件处理**：`files` - 最小文件大小、目录结构保持、跳过已存在文件
 
 - **解码容错**：`error_recovery` - 遇到源流损坏/解码失败时是否自动重试，以及每种编码方法的最大忽错重试次数
@@ -321,6 +324,18 @@ python main.py --verbose --print-cmd
 
 # 尝试单个文件
 ffmpeg -i input.mkv -c:v hevc output.mp4
+```
+
+**补充说明（损坏源流）**：
+
+- 如果日志包含 `Invalid data found when processing input`、`Error splitting the input into NAL units`，通常是源文件局部损坏。
+- SBVC 默认会在该编码方法内自动进行一次“忽错容错重试”。
+- 你可在 `config.yaml` 调整：
+
+```yaml
+error_recovery:
+  retry_decode_errors_with_ignore: true
+  max_ignore_retries_per_method: 1
 ```
 
 ### 问题3：WMV 文件处理很慢
