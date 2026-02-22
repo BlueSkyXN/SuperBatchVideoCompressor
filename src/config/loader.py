@@ -209,6 +209,34 @@ def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
         elif min_size < 0:
             errors.append("files.min_size_mb 不能为负数")
 
+    # 验证解码容错配置
+    error_recovery = config.get("error_recovery", {})
+    if not isinstance(error_recovery, dict):
+        errors.append("error_recovery 必须是字典类型")
+    else:
+        retry_decode_errors_with_ignore = error_recovery.get(
+            "retry_decode_errors_with_ignore"
+        )
+        if retry_decode_errors_with_ignore is not None and not isinstance(
+            retry_decode_errors_with_ignore, bool
+        ):
+            errors.append(
+                "error_recovery.retry_decode_errors_with_ignore 必须是布尔值"
+            )
+
+        max_ignore_retries_per_method = error_recovery.get(
+            "max_ignore_retries_per_method"
+        )
+        if max_ignore_retries_per_method is not None:
+            if not isinstance(max_ignore_retries_per_method, int):
+                errors.append(
+                    "error_recovery.max_ignore_retries_per_method 必须是整数"
+                )
+            elif max_ignore_retries_per_method < 0:
+                errors.append(
+                    "error_recovery.max_ignore_retries_per_method 不能为负数"
+                )
+
     return len(errors) == 0, errors
 
 
