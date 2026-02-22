@@ -144,6 +144,7 @@ def test_validate_config_error_recovery_rejects_invalid_types():
     }
     is_valid, errors = validate_config(cfg)
     assert is_valid is False
+    assert len(errors) == 2
     assert "error_recovery.retry_decode_errors_with_ignore 必须是布尔值" in errors
     assert "error_recovery.max_ignore_retries_per_method 不能为负数" in errors
 
