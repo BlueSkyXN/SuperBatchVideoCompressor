@@ -1,9 +1,16 @@
 # 核心模块
 """视频处理核心功能"""
 
-from src.core.video import get_bitrate, get_resolution, get_codec
+from src.core.video import (
+    get_bitrate,
+    get_resolution,
+    get_codec,
+    get_video_metadata_batch,
+)
 from src.core.encoder import (
     execute_ffmpeg,
+    is_decode_corruption_error,
+    add_ignore_decode_errors_flags,
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
@@ -19,8 +26,11 @@ __all__ = [
     "get_bitrate",
     "get_resolution",
     "get_codec",
+    "get_video_metadata_batch",
     "calculate_target_bitrate",
     "execute_ffmpeg",
+    "is_decode_corruption_error",
+    "add_ignore_decode_errors_flags",
     "build_hw_encode_command",
     "build_sw_encode_command",
     "is_decode_corruption_error",
