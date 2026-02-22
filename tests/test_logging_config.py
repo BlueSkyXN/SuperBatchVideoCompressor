@@ -6,7 +6,7 @@ import logging
 import json
 from types import SimpleNamespace
 
-from src.config.loader import apply_cli_overrides
+from src.config.loader import apply_cli_overrides, validate_config
 from src.utils.logging import setup_logging
 
 
@@ -127,3 +127,41 @@ def test_setup_logging_plain_and_json(tmp_path, capsys):
     assert data["msg"] == "hello"
     assert data["file"] == "demo.mp4"
     assert data["enc"] == "nvenc"
+
+
+def test_validate_config_error_recovery_rejects_invalid_types():
+    cfg = {
+        "paths": {"input": "in", "output": "out", "log": "logs"},
+        "encoders": {},
+        "scheduler": {},
+        "encoding": {"codec": "hevc", "bitrate": {"forced": 0}},
+        "fps": {"max": 30},
+        "files": {"min_size_mb": 1},
+        "error_recovery": {
+            "retry_decode_errors_with_ignore": "yes",
+            "max_ignore_retries_per_method": -1,
+        },
+    }
+    is_valid, errors = validate_config(cfg)
+    assert is_valid is False
+    assert len(errors) == 2
+    assert "error_recovery.retry_decode_errors_with_ignore 必须是布尔值" in errors
+    assert "error_recovery.max_ignore_retries_per_method 不能为负数" in errors
+
+
+def test_validate_config_error_recovery_accepts_valid_values():
+    cfg = {
+        "paths": {"input": "in", "output": "out", "log": "logs"},
+        "encoders": {},
+        "scheduler": {},
+        "encoding": {"codec": "hevc", "bitrate": {"forced": 0}},
+        "fps": {"max": 30},
+        "files": {"min_size_mb": 1},
+        "error_recovery": {
+            "retry_decode_errors_with_ignore": True,
+            "max_ignore_retries_per_method": 1,
+        },
+    }
+    is_valid, errors = validate_config(cfg)
+    assert is_valid is True
+    assert errors == []

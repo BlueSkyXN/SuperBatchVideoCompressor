@@ -209,4 +209,8 @@ DEFAULT_CONFIG = {
         "keep_structure": KEEP_STRUCTURE_FLAG,
         "skip_existing": True,
     },
+    "error_recovery": {
+        "retry_decode_errors_with_ignore": True,
+        "max_ignore_retries_per_method": 1,
+    },
 }

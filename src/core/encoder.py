@@ -18,8 +18,7 @@ from src.config.defaults import (
     BITRATE_RATIO,
 )
 
-
-# 常见“源流损坏/解码失败”错误关键词（大小写不敏感）
+# 常见"源流损坏/解码失败"错误关键词（大小写不敏感）
 DECODE_CORRUPTION_ERROR_PATTERNS = [
     "decoding error: invalid data found when processing input",
     "invalid data found when processing input",
@@ -79,7 +78,7 @@ def parse_bitrate_to_bps(value: Any) -> Optional[int]:
 
 
 def is_decode_corruption_error(error_text: Optional[str]) -> bool:
-    """判断错误文本是否属于“源流损坏/解码失败”类型。"""
+    """判断错误文本是否属于"源流损坏/解码失败"类型。"""
     if not error_text:
         return False
 
@@ -89,7 +88,7 @@ def is_decode_corruption_error(error_text: Optional[str]) -> bool:
 
 def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     """
-    在 FFmpeg 命令中注入“尽量忽略坏包继续转码”的输入参数。
+    在 FFmpeg 命令中注入"尽量忽略坏包继续转码"的输入参数。
 
     注入规则：在第一个 `-i` 之前追加：
     - `-fflags +discardcorrupt`
@@ -118,7 +117,9 @@ def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     return pre_input + extra_flags + post_input
 
 
-def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
+def execute_ffmpeg(
+    cmd: list, timeout: Optional[int] = None
+) -> Tuple[bool, Optional[str]]:
     """
     执行 FFmpeg 命令并检查错误
 
@@ -152,7 +153,12 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
         )
         register_process(process)
         try:
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                return False, f"FFmpeg 执行超时（{timeout}秒）"
         finally:
             unregister_process(process)
 
@@ -179,7 +185,8 @@ def execute_ffmpeg(cmd: list) -> Tuple[bool, Optional[str]]:
             return False, stderr[-500:] if len(stderr) > 500 else stderr
 
         return True, None
-    except Exception as e:
+    # 仅处理 FFmpeg 启动/执行相关异常，避免吞掉业务逻辑异常。
+    except (subprocess.SubprocessError, OSError) as e:
         return False, str(e)
 
 

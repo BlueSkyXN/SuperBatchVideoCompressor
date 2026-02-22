@@ -11,7 +11,7 @@ import os
 import logging
 import copy
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 
 from src.config.defaults import (
     DEFAULT_CONFIG,
@@ -86,6 +86,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     Returns:
         配置字典
+        
+    Raises:
+        ValueError: 如果配置验证失败
     """
     # 使用默认配置
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -105,12 +108,136 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             with open(config_path, "r", encoding="utf-8") as f:
                 file_config = yaml.safe_load(f) or {}
             logging.info(f"已加载配置文件: {config_path}")
-            return deep_merge(config, file_config)
+            merged_config = deep_merge(config, file_config)
+            
+            # 验证配置
+            is_valid, errors = validate_config(merged_config)
+            if not is_valid:
+                logging.error("配置验证失败:")
+                for error in errors:
+                    logging.error(f"  - {error}")
+                raise ValueError(f"配置文件验证失败: {'; '.join(errors)}")
+            
+            return merged_config
+        except yaml.YAMLError as e:
+            logging.error(f"YAML 解析失败: {e}，使用默认配置")
+            return config
+        except ValueError:
+            raise  # 重新抛出验证错误
         except Exception as e:
             logging.warning(f"加载配置文件失败: {e}，使用默认配置")
             return config
 
     return config
+
+
+def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """
+    验证配置项的合法性
+
+    Args:
+        config: 配置字典
+
+    Returns:
+        (是否有效, 错误列表)
+    """
+    errors = []
+
+    # 验证路径配置
+    paths = config.get("paths", {})
+    for key in ["input", "output", "log"]:
+        path = paths.get(key)
+        if not path or not isinstance(path, str):
+            errors.append(f"paths.{key} 必须是非空字符串")
+        elif not path.strip():
+            errors.append(f"paths.{key} 不能只包含空白字符")
+
+    # 验证编码器配置
+    encoders = config.get("encoders", {})
+    for enc_name in ["nvenc", "qsv", "videotoolbox", "cpu"]:
+        enc_config = encoders.get(enc_name, {})
+        if not isinstance(enc_config, dict):
+            errors.append(f"encoders.{enc_name} 必须是字典类型")
+            continue
+        
+        # 验证并发数
+        max_concurrent = enc_config.get("max_concurrent")
+        if max_concurrent is not None:
+            if not isinstance(max_concurrent, int):
+                errors.append(f"encoders.{enc_name}.max_concurrent 必须是整数")
+            elif max_concurrent < 1 or max_concurrent > 100:
+                errors.append(f"encoders.{enc_name}.max_concurrent 必须在 1-100 之间")
+
+    # 验证调度器配置
+    scheduler = config.get("scheduler", {})
+    max_total = scheduler.get("max_total_concurrent")
+    if max_total is not None:
+        if not isinstance(max_total, int):
+            errors.append("scheduler.max_total_concurrent 必须是整数")
+        elif max_total < 1 or max_total > 100:
+            errors.append("scheduler.max_total_concurrent 必须在 1-100 之间")
+
+    # 验证编码配置
+    encoding = config.get("encoding", {})
+    codec = encoding.get("codec")
+    if codec and codec not in ["hevc", "avc", "av1"]:
+        errors.append(f"encoding.codec 必须是 hevc, avc 或 av1，当前值: {codec}")
+    
+    bitrate_cfg = encoding.get("bitrate", {})
+    forced_bitrate = bitrate_cfg.get("forced")
+    if forced_bitrate is not None:
+        if not isinstance(forced_bitrate, int):
+            errors.append("encoding.bitrate.forced 必须是整数")
+        elif forced_bitrate < 0:
+            errors.append("encoding.bitrate.forced 不能为负数")
+
+    # 验证帧率配置
+    fps_cfg = config.get("fps", {})
+    max_fps = fps_cfg.get("max")
+    if max_fps is not None:
+        if not isinstance(max_fps, int):
+            errors.append("fps.max 必须是整数")
+        elif max_fps < 1 or max_fps > 240:
+            errors.append("fps.max 必须在 1-240 之间")
+
+    # 验证文件配置
+    files_cfg = config.get("files", {})
+    min_size = files_cfg.get("min_size_mb")
+    if min_size is not None:
+        if not isinstance(min_size, (int, float)):
+            errors.append("files.min_size_mb 必须是数字")
+        elif min_size < 0:
+            errors.append("files.min_size_mb 不能为负数")
+
+    # 验证解码容错配置
+    error_recovery = config.get("error_recovery", {})
+    if not isinstance(error_recovery, dict):
+        errors.append("error_recovery 必须是字典类型")
+    else:
+        retry_decode_errors_with_ignore = error_recovery.get(
+            "retry_decode_errors_with_ignore"
+        )
+        if retry_decode_errors_with_ignore is not None and not isinstance(
+            retry_decode_errors_with_ignore, bool
+        ):
+            errors.append(
+                "error_recovery.retry_decode_errors_with_ignore 必须是布尔值"
+            )
+
+        max_ignore_retries_per_method = error_recovery.get(
+            "max_ignore_retries_per_method"
+        )
+        if max_ignore_retries_per_method is not None:
+            if not isinstance(max_ignore_retries_per_method, int):
+                errors.append(
+                    "error_recovery.max_ignore_retries_per_method 必须是整数"
+                )
+            elif max_ignore_retries_per_method < 0:
+                errors.append(
+                    "error_recovery.max_ignore_retries_per_method 不能为负数"
+                )
+
+    return len(errors) == 0, errors
 
 
 def apply_cli_overrides(config: Dict[str, Any], args) -> Dict[str, Any]:

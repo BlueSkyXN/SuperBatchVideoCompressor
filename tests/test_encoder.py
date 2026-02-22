@@ -6,6 +6,7 @@
 
 import sys
 import os
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -16,6 +17,7 @@ from src.core.encoder import (
     is_decode_corruption_error,
     add_ignore_decode_errors_flags,
     SUPPORTED_HW_DECODE_CODECS,
+    execute_ffmpeg,
 )
 from src.config.defaults import HW_ENCODERS, SW_ENCODERS
 
@@ -227,6 +229,47 @@ class TestHardwareDecodeWhitelist:
 
         # NVENC 支持 VP9
         assert "vp9" in SUPPORTED_HW_DECODE_CODECS["nvenc"]
+
+
+class TestExecuteFFmpeg:
+    """FFmpeg 执行测试"""
+
+    def test_success_returns_true(self, monkeypatch):
+        class DummyProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: DummyProcess())
+
+        success, error = execute_ffmpeg(["ffmpeg", "-version"], timeout=15)
+        assert success is True
+        assert error is None
+
+    def test_timeout_returns_readable_error(self, monkeypatch):
+        class DummyProcess:
+            returncode = 1
+            killed = False
+
+            def communicate(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=timeout)
+                return "", ""
+
+            def kill(self):
+                self.killed = True
+
+        process = DummyProcess()
+
+        monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: process)
+
+        success, error = execute_ffmpeg(["ffmpeg", "-version"], timeout=15)
+        assert success is False
+        assert "超时" in error
+        assert "15" in error
+        assert process.killed is True
+
 
 
 class TestDecodeErrorRecoveryHelpers:
