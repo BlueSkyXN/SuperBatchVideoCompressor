@@ -62,6 +62,9 @@ DEFAULT_OUTPUT_CODEC = "hevc"
 # ============================================================
 RETRY_DECODE_ERRORS_WITH_IGNORE = True
 MAX_IGNORE_RETRIES_PER_METHOD = 1
+RETRY_TIMESTAMP_ERRORS_WITH_GENPTS = True
+MAX_TIMESTAMP_RETRIES_PER_METHOD = 1
+INHERIT_RECOVERY_PROFILE_ACROSS_FALLBACKS = True
 
 # ============================================================
 # 硬件编码器映射表
@@ -177,10 +180,15 @@ DEFAULT_CONFIG = {
         "limit_on_software_encode": LIMIT_FPS_ON_SOFTWARE_ENCODE,
     },
     "error_recovery": {
+        # 时间戳异常（DTS/PTS 乱序）时，追加 -fflags +genpts+igndts 重试
+        "retry_timestamp_errors_with_genpts": RETRY_TIMESTAMP_ERRORS_WITH_GENPTS,
+        "max_timestamp_retries_per_method": MAX_TIMESTAMP_RETRIES_PER_METHOD,
         # 检测到源流损坏/解码错误时，追加 -fflags +discardcorrupt -err_detect ignore_err
         # 并在“当前编码方法”内重试。
         "retry_decode_errors_with_ignore": RETRY_DECODE_ERRORS_WITH_IGNORE,
         "max_ignore_retries_per_method": MAX_IGNORE_RETRIES_PER_METHOD,
+        # 当当前方法探测到更优容错参数档位时，回退到其他方法时继承该档位，减少重复失败。
+        "inherit_recovery_profile_across_fallbacks": INHERIT_RECOVERY_PROFILE_ACROSS_FALLBACKS,
     },
     "encoders": {
         "nvenc": {
@@ -208,9 +216,5 @@ DEFAULT_CONFIG = {
         "min_size_mb": MIN_FILE_SIZE_MB,
         "keep_structure": KEEP_STRUCTURE_FLAG,
         "skip_existing": True,
-    },
-    "error_recovery": {
-        "retry_decode_errors_with_ignore": True,
-        "max_ignore_retries_per_method": 1,
     },
 }

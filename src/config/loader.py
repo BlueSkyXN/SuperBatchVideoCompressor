@@ -224,6 +224,16 @@ def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 "error_recovery.retry_decode_errors_with_ignore 必须是布尔值"
             )
 
+        retry_timestamp_errors_with_genpts = error_recovery.get(
+            "retry_timestamp_errors_with_genpts"
+        )
+        if retry_timestamp_errors_with_genpts is not None and not isinstance(
+            retry_timestamp_errors_with_genpts, bool
+        ):
+            errors.append(
+                "error_recovery.retry_timestamp_errors_with_genpts 必须是布尔值"
+            )
+
         max_ignore_retries_per_method = error_recovery.get(
             "max_ignore_retries_per_method"
         )
@@ -236,6 +246,29 @@ def validate_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 errors.append(
                     "error_recovery.max_ignore_retries_per_method 不能为负数"
                 )
+
+        max_timestamp_retries_per_method = error_recovery.get(
+            "max_timestamp_retries_per_method"
+        )
+        if max_timestamp_retries_per_method is not None:
+            if not isinstance(max_timestamp_retries_per_method, int):
+                errors.append(
+                    "error_recovery.max_timestamp_retries_per_method 必须是整数"
+                )
+            elif max_timestamp_retries_per_method < 0:
+                errors.append(
+                    "error_recovery.max_timestamp_retries_per_method 不能为负数"
+                )
+
+        inherit_recovery_profile_across_fallbacks = error_recovery.get(
+            "inherit_recovery_profile_across_fallbacks"
+        )
+        if inherit_recovery_profile_across_fallbacks is not None and not isinstance(
+            inherit_recovery_profile_across_fallbacks, bool
+        ):
+            errors.append(
+                "error_recovery.inherit_recovery_profile_across_fallbacks 必须是布尔值"
+            )
 
     return len(errors) == 0, errors
 

@@ -14,6 +14,8 @@ from src.core.encoder import (
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
+    is_timestamp_disorder_error,
+    add_timestamp_repair_flags,
     is_decode_corruption_error,
     add_ignore_decode_errors_flags,
     SUPPORTED_HW_DECODE_CODECS,
@@ -279,6 +281,10 @@ class TestDecodeErrorRecoveryHelpers:
         error = "Decoding error: Invalid data found when processing input"
         assert is_decode_corruption_error(error) is True
 
+    def test_detect_timestamp_disorder_error(self):
+        error = "Application provided invalid, non monotonically increasing dts to muxer"
+        assert is_timestamp_disorder_error(error) is True
+
     def test_detect_non_decode_error(self):
         error = "Unknown encoder 'hevc_xxx'"
         assert is_decode_corruption_error(error) is False
@@ -311,3 +317,36 @@ class TestDecodeErrorRecoveryHelpers:
 
         updated = add_ignore_decode_errors_flags(cmd)
         assert updated == cmd
+
+    def test_add_timestamp_flags_before_input(self):
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-i", "input.mp4", "-c:v", "hevc_nvenc", "out.mp4"]
+        updated = add_timestamp_repair_flags(cmd)
+
+        i_index = updated.index("-i")
+        assert "-fflags" in updated[:i_index]
+        assert "+genpts+igndts" in updated[:i_index]
+
+    def test_merge_ignore_flags_into_existing_fflags(self):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-fflags",
+            "+genpts+igndts",
+            "-i",
+            "input.mp4",
+            "-c:v",
+            "hevc_nvenc",
+            "out.mp4",
+        ]
+
+        updated = add_ignore_decode_errors_flags(cmd)
+        i_index = updated.index("-i")
+        pre_input = updated[:i_index]
+        fflags_index = pre_input.index("-fflags")
+        fflags_value = pre_input[fflags_index + 1]
+
+        assert "genpts" in fflags_value
+        assert "igndts" in fflags_value
+        assert "discardcorrupt" in fflags_value
+        assert "-err_detect" in pre_input

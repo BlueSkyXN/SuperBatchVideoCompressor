@@ -40,6 +40,7 @@
 1. **多编码器真正并发**：NVENC 和 QSV 同时处理不同文件
 2. **智能回退机制**：失败任务按规则降级重试
 3. **自动硬件检测**：启动时检测可用编码器
+4. **报错驱动容错升级**：根据 FFmpeg 报错分层追加输入参数，减少无效重试
 
 ### 调度流程
 ```
@@ -199,6 +200,24 @@ logging:
 2. 配置文件 (config.yaml)
 3. 程序默认值 (src/config/defaults.py)
 
+### 解码/时间戳容错配置
+
+```yaml
+error_recovery:
+  retry_timestamp_errors_with_genpts: true
+  max_timestamp_retries_per_method: 1
+  retry_decode_errors_with_ignore: true
+  max_ignore_retries_per_method: 1
+  inherit_recovery_profile_across_fallbacks: true
+```
+
+策略说明（不涉及 concat）：
+
+1. 命中时间戳异常报错（如 DTS/PTS 乱序）时，先加 `-fflags +genpts+igndts`。
+2. 命中源流损坏/解码失败报错时，再升级加 `-fflags +discardcorrupt -err_detect ignore_err`。
+3. 若某次尝试已学习到更高容错档位，回退到其他编码器/解码模式时继承该档位，减少重复失败。
+4. 该策略作用于常规单输入编码链路，不包含 concat demuxer 的拼接参数管理。
+
 ## 核心模块
 
 ### encoder.py
@@ -206,6 +225,10 @@ logging:
 - `build_hw_encode_command()`: 构建硬件编码命令
 - `build_sw_encode_command()`: 构建软件编码命令
 - `execute_ffmpeg()`: 执行命令并处理错误
+- `is_timestamp_disorder_error()`: 识别 DTS/PTS 时间戳异常错误
+- `add_timestamp_repair_flags()`: 注入 `-fflags +genpts+igndts`
+- `is_decode_corruption_error()`: 识别源流损坏/解码错误
+- `add_ignore_decode_errors_flags()`: 注入 `-fflags +discardcorrupt -err_detect ignore_err`
 
 #### 硬件解码白名单机制
 `SUPPORTED_HW_DECODE_CODECS` 是一个按编码器分类的字典，定义了每个硬件加速器支持的硬件解码格式：

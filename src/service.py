@@ -22,6 +22,8 @@ from src.core import (
     calculate_target_bitrate,
     build_hw_encode_command,
     build_sw_encode_command,
+    add_timestamp_repair_flags,
+    is_timestamp_disorder_error,
     is_decode_corruption_error,
     add_ignore_decode_errors_flags,
 )
@@ -77,11 +79,25 @@ def run_batch(config: Dict[str, Any]) -> int:
     max_ignore_retries_per_method = error_recovery_cfg.get(
         "max_ignore_retries_per_method", 1
     )
+    retry_timestamp_errors_with_genpts = error_recovery_cfg.get(
+        "retry_timestamp_errors_with_genpts", True
+    )
+    max_timestamp_retries_per_method = error_recovery_cfg.get(
+        "max_timestamp_retries_per_method", 1
+    )
+    inherit_recovery_profile_across_fallbacks = error_recovery_cfg.get(
+        "inherit_recovery_profile_across_fallbacks", True
+    )
     try:
         max_ignore_retries_per_method = int(max_ignore_retries_per_method)
     except (TypeError, ValueError):
         max_ignore_retries_per_method = 1
     max_ignore_retries_per_method = max(0, max_ignore_retries_per_method)
+    try:
+        max_timestamp_retries_per_method = int(max_timestamp_retries_per_method)
+    except (TypeError, ValueError):
+        max_timestamp_retries_per_method = 1
+    max_timestamp_retries_per_method = max(0, max_timestamp_retries_per_method)
 
     cpu_preset = config.get("encoders", {}).get("cpu", {}).get("preset", "medium")
     dry_run = config.get("dry_run", False)
@@ -122,6 +138,17 @@ def run_batch(config: Dict[str, Any]) -> int:
         )
     else:
         logger.info("解码错误容错: 禁用")
+    if retry_timestamp_errors_with_genpts and max_timestamp_retries_per_method > 0:
+        logger.info(
+            "时间戳修复容错: 启用 "
+            f"(每种编码方法最多重试 {max_timestamp_retries_per_method} 次)"
+        )
+    else:
+        logger.info("时间戳修复容错: 禁用")
+    logger.info(
+        "回退参数继承: "
+        f"{'启用' if inherit_recovery_profile_across_fallbacks else '禁用'}"
+    )
     for enc_name, enc_stats in stats["encoder_slots"].items():
         logger.info(f"  - {enc_name}: 最大并发 {enc_stats['max']}")
     logger.info("回退策略: 硬解+硬编 → 软解+硬编 → 其他编码器 → CPU")
@@ -197,6 +224,64 @@ def run_batch(config: Dict[str, Any]) -> int:
     skipped_count = 0
     overwrite_count = 0
     lock = threading.Lock()
+    recovery_lock = threading.Lock()
+
+    RECOVERY_PROFILE_BASE = 0
+    RECOVERY_PROFILE_TIMESTAMP = 1
+    RECOVERY_PROFILE_TOLERANT = 2
+    recovery_profile_cache: Dict[str, int] = {}
+
+    def get_recovery_profile_level(target_path: str) -> int:
+        if not inherit_recovery_profile_across_fallbacks:
+            return RECOVERY_PROFILE_BASE
+        with recovery_lock:
+            return recovery_profile_cache.get(target_path, RECOVERY_PROFILE_BASE)
+
+    def upgrade_recovery_profile_level(target_path: str, level: int) -> int:
+        if not inherit_recovery_profile_across_fallbacks:
+            return RECOVERY_PROFILE_BASE
+        with recovery_lock:
+            current = recovery_profile_cache.get(target_path, RECOVERY_PROFILE_BASE)
+            if level > current:
+                recovery_profile_cache[target_path] = level
+                return level
+            return current
+
+    def recovery_profile_label(level: int) -> str:
+        if level >= RECOVERY_PROFILE_TOLERANT:
+            if retry_timestamp_errors_with_genpts:
+                return "时间戳修复+忽错容错"
+            return "忽错容错"
+        if level >= RECOVERY_PROFILE_TIMESTAMP:
+            return "时间戳修复"
+        return "基础参数"
+
+    def apply_recovery_profile(cmd: List[str], level: int) -> List[str]:
+        updated_cmd = list(cmd)
+        if level >= RECOVERY_PROFILE_TIMESTAMP and retry_timestamp_errors_with_genpts:
+            updated_cmd = add_timestamp_repair_flags(updated_cmd)
+        if level >= RECOVERY_PROFILE_TOLERANT:
+            updated_cmd = add_ignore_decode_errors_flags(updated_cmd)
+        return updated_cmd
+
+    def apply_profile_to_cmd_info(cmd_info: Dict[str, Any], level: int) -> Dict[str, Any]:
+        if level <= RECOVERY_PROFILE_BASE:
+            return cmd_info
+
+        updated_cmd = apply_recovery_profile(cmd_info["cmd"], level)
+        if updated_cmd == cmd_info["cmd"]:
+            return cmd_info
+
+        suffix = recovery_profile_label(level)
+        updated_name = cmd_info["name"]
+        if suffix not in updated_name:
+            updated_name = f"{updated_name} + {suffix}"
+
+        return {
+            **cmd_info,
+            "cmd": updated_cmd,
+            "name": updated_name,
+        }
 
     # 预检查输出是否已存在
     for filepath in video_files:
@@ -498,6 +583,15 @@ def run_batch(config: Dict[str, Any]) -> int:
                     stats=stats,
                 )
 
+            inherited_profile_level = get_recovery_profile_level(filepath)
+            if inherited_profile_level > RECOVERY_PROFILE_BASE:
+                cmd_info = apply_profile_to_cmd_info(cmd_info, inherited_profile_level)
+                logger.debug(
+                    f"[任务 {task_label}] 继承容错参数档位: "
+                    f"{recovery_profile_label(inherited_profile_level)}",
+                    extra=extra_ctx,
+                )
+
             # 获取文件相对路径
             rel_path = os.path.relpath(filepath, input_folder)
             logger.info(
@@ -544,6 +638,10 @@ def run_batch(config: Dict[str, Any]) -> int:
                         extra=extra_ctx,
                     )
                 else:
+                    retry_cmd_info = apply_profile_to_cmd_info(
+                        retry_cmd_info,
+                        inherited_profile_level,
+                    )
                     logger.warning(
                         f"[任务 {task_label}] 音频 copy 失败，回退转码重试一次",
                         extra=extra_ctx,
@@ -558,6 +656,48 @@ def run_batch(config: Dict[str, Any]) -> int:
                             extra=extra_ctx,
                         )
 
+            # 检测到时间戳异常时，注入 genpts/igndts 重试（同编码方法内）
+            if (
+                not success
+                and retry_timestamp_errors_with_genpts
+                and max_timestamp_retries_per_method > 0
+                and is_timestamp_disorder_error(error)
+            ):
+                inherited_profile_level = upgrade_recovery_profile_level(
+                    filepath,
+                    RECOVERY_PROFILE_TIMESTAMP,
+                )
+                timestamp_cmd = add_timestamp_repair_flags(cmd_info["cmd"])
+
+                if timestamp_cmd != cmd_info["cmd"]:
+                    for attempt in range(1, max_timestamp_retries_per_method + 1):
+                        logger.warning(
+                            f"[任务 {task_label}] 检测到时间戳异常，"
+                            "启用时间戳修复重试 "
+                            f"{attempt}/{max_timestamp_retries_per_method}",
+                            extra=extra_ctx,
+                        )
+                        success, error = execute_ffmpeg(
+                            timestamp_cmd,
+                            timeout=ffmpeg_timeout,
+                        )
+                        if success:
+                            logger.warning(
+                                f"[任务 {task_label}] 时间戳修复重试成功",
+                                extra=extra_ctx,
+                            )
+                            cmd_info = {
+                                **cmd_info,
+                                "cmd": timestamp_cmd,
+                                "name": f"{cmd_info['name']} + 时间戳修复",
+                            }
+                            break
+                else:
+                    logger.debug(
+                        f"[任务 {task_label}] 当前命令已包含时间戳修复参数，跳过重复注入",
+                        extra=extra_ctx,
+                    )
+
             # 检测到源流损坏/解码错误时，注入忽错参数重试（同编码方法内）
             if (
                 not success
@@ -565,7 +705,14 @@ def run_batch(config: Dict[str, Any]) -> int:
                 and max_ignore_retries_per_method > 0
                 and is_decode_corruption_error(error)
             ):
-                tolerant_cmd = add_ignore_decode_errors_flags(cmd_info["cmd"])
+                inherited_profile_level = upgrade_recovery_profile_level(
+                    filepath,
+                    RECOVERY_PROFILE_TOLERANT,
+                )
+                tolerant_cmd = apply_recovery_profile(
+                    cmd_info["cmd"],
+                    RECOVERY_PROFILE_TOLERANT,
+                )
 
                 if tolerant_cmd != cmd_info["cmd"]:
                     for attempt in range(1, max_ignore_retries_per_method + 1):

@@ -10,7 +10,7 @@ SBVC 是一个基于 FFmpeg 的批量视频压缩命令行工具，支持 NVENC 
   - 同编码器内：硬解+硬编 → 软解+硬编(限帧) → 软解+硬编
   - 跨编码器：NVENC 失败 → QSV，QSV 失败 → NVENC
   - 最终兜底：CPU 软编码（可开关）
-  - 解码损坏容错：识别源流损坏错误并自动注入忽错参数重试（可配置）
+  - 自适应容错：按 FFmpeg 报错分层追加参数（时间戳修复 → 忽错容错），并可跨回退继承最佳档位
   - 所有方法失败的任务跳过，继续处理队列
 - **进程管理**：Ctrl+C 自动终止所有 FFmpeg 进程，启动时清理临时文件
 - 自动按分辨率计算目标码率
@@ -64,8 +64,11 @@ python main.py --dry-run
 
 - **帧率限制**：`fps` - 最大帧率、软解/软编时是否限帧
 
-- **解码错误容错**：`error_recovery` - 当源文件局部损坏时，自动启用
-  `-fflags +discardcorrupt -err_detect ignore_err` 做同方法重试
+- **解码/时间戳容错**：`error_recovery` - 按 FFmpeg 报错分层重试
+  - 时间戳异常（DTS/PTS 乱序）先启用：`-fflags +genpts+igndts`
+  - 解码损坏再升级：`-fflags +discardcorrupt -err_detect ignore_err`
+  - 编码方法回退时可继承已学习的最佳参数档位，减少重复失败
+  - 本策略面向普通单文件输入流程（非 concat）
 
 - **文件处理**：`files` - 最小文件大小、目录结构保持、跳过已存在文件
 
@@ -328,14 +331,18 @@ ffmpeg -i input.mkv -c:v hevc output.mp4
 
 **补充说明（损坏源流）**：
 
-- 如果日志包含 `Invalid data found when processing input`、`Error splitting the input into NAL units`，通常是源文件局部损坏。
-- SBVC 默认会在该编码方法内自动进行一次“忽错容错重试”。
+- 如果日志包含 `Non-monotonous DTS` / `invalid dts/pts`，通常是时间戳异常；SBVC 会优先尝试“时间戳修复重试”。
+- 如果日志包含 `Invalid data found when processing input`、`Error splitting the input into NAL units`，通常是源文件局部损坏；SBVC 会升级到“忽错容错重试”。
+- 若当前方法探测到更高容错档位，回退到其他编码器/解码模式时默认继承该档位，减少无效重试。
 - 你可在 `config.yaml` 调整：
 
 ```yaml
 error_recovery:
+  retry_timestamp_errors_with_genpts: true
+  max_timestamp_retries_per_method: 1
   retry_decode_errors_with_ignore: true
   max_ignore_retries_per_method: 1
+  inherit_recovery_profile_across_fallbacks: true
 ```
 
 ### 问题3：WMV 文件处理很慢

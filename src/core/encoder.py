@@ -8,6 +8,7 @@ FFmpeg 编码器模块
 
 import subprocess
 import logging
+import re
 from typing import Dict, Any, Tuple, Optional, List
 
 from src.config.defaults import (
@@ -26,6 +27,19 @@ DECODE_CORRUPTION_ERROR_PATTERNS = [
     "missing picture in access unit",
     "error submitting packet to decoder",
     "corrupt",
+]
+
+# 常见"时间戳异常/DTS-PTS 乱序"错误关键词（大小写不敏感）
+TIMESTAMP_DISORDER_ERROR_PATTERNS = [
+    "non-monotonous dts",
+    "non monotonically increasing dts",
+    "invalid dts",
+    "invalid pts",
+    "dts discontinuity",
+    "timestamps are unset",
+    "pts has no value",
+    "application provided invalid, non monotonically increasing dts",
+    "timestamp",
 ]
 
 
@@ -86,6 +100,111 @@ def is_decode_corruption_error(error_text: Optional[str]) -> bool:
     return any(pattern in lowered for pattern in DECODE_CORRUPTION_ERROR_PATTERNS)
 
 
+def is_timestamp_disorder_error(error_text: Optional[str]) -> bool:
+    """判断错误文本是否属于"时间戳异常/DTS-PTS 乱序"类型。"""
+    if not error_text:
+        return False
+
+    lowered = str(error_text).lower()
+    return any(pattern in lowered for pattern in TIMESTAMP_DISORDER_ERROR_PATTERNS)
+
+
+def _split_plus_flags(expr: str) -> List[str]:
+    """将 `+a+b` / `a+b` / `a,b` 等表达式拆成 flag 列表（保序去空）。"""
+    if not expr:
+        return []
+
+    # 兼容 + / - / , / 空白作为分隔符；本项目只做“追加启用”而不做禁用。
+    raw_items = re.split(r"[+,\s-]+", str(expr).strip())
+    items: List[str] = []
+    seen = set()
+    for item in raw_items:
+        token = item.strip()
+        if not token:
+            continue
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(token)
+    return items
+
+
+def _merge_plus_flags(existing_expr: str, required_flags: List[str]) -> str:
+    """合并并标准化为 `+a+b+c` 形式。"""
+    merged: List[str] = []
+    seen = set()
+
+    for token in _split_plus_flags(existing_expr) + list(required_flags):
+        key = str(token).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(str(token).strip())
+
+    if not merged:
+        return ""
+
+    return "+" + "+".join(merged)
+
+
+def _upsert_pre_input_plus_option(
+    cmd: List[str], option: str, required_flags: List[str]
+) -> List[str]:
+    """
+    在第一个 `-i` 之前注入或合并形如 `-option +a+b` 的参数。
+
+    例如：
+    - `-fflags +genpts+igndts`
+    - `-err_detect ignore_err`
+    """
+    if not cmd:
+        return cmd
+
+    new_cmd = list(cmd)
+    if "-i" not in new_cmd:
+        return new_cmd
+
+    input_index = new_cmd.index("-i")
+    pre_input = list(new_cmd[:input_index])
+    post_input = new_cmd[input_index:]
+
+    if option in pre_input:
+        option_idx = pre_input.index(option)
+        existing_value = pre_input[option_idx + 1] if option_idx + 1 < len(pre_input) else ""
+        existing_flags = {flag.lower() for flag in _split_plus_flags(str(existing_value))}
+        required_set = {flag.lower() for flag in required_flags if str(flag).strip()}
+        if required_set.issubset(existing_flags):
+            return new_cmd
+
+        merged_value = _merge_plus_flags(str(existing_value), required_flags)
+        if not merged_value:
+            return new_cmd
+
+        if option_idx + 1 < len(pre_input):
+            pre_input[option_idx + 1] = merged_value
+        else:
+            pre_input.append(merged_value)
+        return pre_input + post_input
+
+    merged_value = _merge_plus_flags("", required_flags)
+    if not merged_value:
+        return new_cmd
+
+    pre_input.extend([option, merged_value])
+    return pre_input + post_input
+
+
+def add_timestamp_repair_flags(cmd: List[str]) -> List[str]:
+    """
+    在 FFmpeg 命令中注入时间戳修复输入参数（第一个 `-i` 之前）。
+
+    注入规则：
+    - `-fflags +genpts+igndts`
+    """
+    return _upsert_pre_input_plus_option(cmd, "-fflags", ["genpts", "igndts"])
+
+
 def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     """
     在 FFmpeg 命令中注入"尽量忽略坏包继续转码"的输入参数。
@@ -97,24 +216,9 @@ def add_ignore_decode_errors_flags(cmd: List[str]) -> List[str]:
     if not cmd:
         return cmd
 
-    new_cmd = list(cmd)
-    if "-i" not in new_cmd:
-        return new_cmd
-
-    input_index = new_cmd.index("-i")
-    pre_input = new_cmd[:input_index]
-    post_input = new_cmd[input_index:]
-
-    extra_flags = []
-    if "-fflags" not in pre_input:
-        extra_flags.extend(["-fflags", "+discardcorrupt"])
-    if "-err_detect" not in pre_input:
-        extra_flags.extend(["-err_detect", "ignore_err"])
-
-    if not extra_flags:
-        return new_cmd
-
-    return pre_input + extra_flags + post_input
+    updated = _upsert_pre_input_plus_option(cmd, "-fflags", ["discardcorrupt"])
+    updated = _upsert_pre_input_plus_option(updated, "-err_detect", ["ignore_err"])
+    return updated
 
 
 def execute_ffmpeg(
@@ -177,6 +281,9 @@ def execute_ffmpeg(
             for error_pattern in known_errors:
                 if error_pattern in stderr:
                     return False, error_pattern
+
+            if is_timestamp_disorder_error(stderr):
+                return False, "Timestamp error: DTS/PTS disorder detected"
 
             if is_decode_corruption_error(stderr):
                 return False, "Decoding error: Invalid data found when processing input"
